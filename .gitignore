@@ -1,0 +1,15 @@
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+.cache/
+data/raw/kursh_dw_lulc/*
+!data/raw/kursh_dw_lulc/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+figures/*
+!figures/.gitkeep
+tables/*
+!tables/.gitkeep
+rasters/*
+!rasters/.gitkeep

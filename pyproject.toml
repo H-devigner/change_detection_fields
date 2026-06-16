@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kursh-dw-lulc-change-detection"
+version = "0.1.0"
+description = "Standalone sample Dynamic World LULC seasonal change processor."
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "rasterio>=1.4",
+]
+
