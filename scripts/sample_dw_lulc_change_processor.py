@@ -100,7 +100,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--extensions",
         default=".tif,.tiff,.vrt",
-        help="Comma-separated raster extensions to try.",
+        help="Comma-separated raster extensions to try inside files or matching snapshot directories.",
+    )
+    parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="Search recursively inside --input-dir for snapshot files/directories.",
     )
     parser.add_argument(
         "--nodata-values",
@@ -123,7 +128,41 @@ def parse_csv_strings(raw: str) -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
-def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str]) -> Path:
+def candidate_listing(input_dir: Path, stem: str) -> str:
+    if not input_dir.exists():
+        return "input directory does not exist"
+    candidates = sorted(p.name for p in input_dir.glob(f"*{stem}*"))[:20]
+    if candidates:
+        return "nearby candidates: " + ", ".join(candidates)
+    return "no nearby candidates matched the expected stem"
+
+
+def pick_raster_from_directory(directory: Path, extensions: list[str]) -> Path | None:
+    matches: list[Path] = []
+    for ext in extensions:
+        matches.extend(directory.rglob(f"*{ext}"))
+    matches = sorted(
+        p for p in matches
+        if p.is_file() and not p.name.startswith(".") and ".aux.xml" not in p.name
+    )
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    preferred = [
+        p for p in matches
+        if any(token in p.name.lower() for token in ("dw", "lulc", "classification", "class"))
+    ]
+    return sorted(preferred or matches, key=lambda p: (len(p.parts), p.name))[0]
+
+
+def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recursive: bool) -> Path:
+    directory_candidate = input_dir / stem
+    if directory_candidate.is_dir():
+        raster = pick_raster_from_directory(directory_candidate, extensions)
+        if raster is not None:
+            return raster
+
     for ext in extensions:
         candidate = input_dir / f"{stem}{ext}"
         if candidate.exists():
@@ -131,7 +170,23 @@ def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str]) -> Pat
     matches = sorted(input_dir.glob(f"{stem}.*"))
     if matches:
         return matches[0]
-    raise FileNotFoundError(f"No raster found for stem '{stem}' in {input_dir}")
+
+    if recursive:
+        directory_matches = sorted(p for p in input_dir.rglob(stem) if p.is_dir())
+        for directory_match in directory_matches:
+            raster = pick_raster_from_directory(directory_match, extensions)
+            if raster is not None:
+                return raster
+        for ext in extensions:
+            recursive_matches = sorted(input_dir.rglob(f"{stem}{ext}"))
+            if recursive_matches:
+                return recursive_matches[0]
+
+    raise FileNotFoundError(
+        f"No raster found for stem '{stem}' in {input_dir}. "
+        f"Expected either '{stem}.tif' or a directory named '{stem}' containing a raster. "
+        f"{candidate_listing(input_dir, stem)}"
+    )
 
 
 def discover_snapshots(args: argparse.Namespace) -> list[Snapshot]:
@@ -142,7 +197,7 @@ def discover_snapshots(args: argparse.Namespace) -> list[Snapshot]:
     for year in years:
         for season in seasons:
             stem = args.filename_template.format(year=year, season=season)
-            path = find_snapshot_file(args.input_dir, stem, extensions)
+            path = find_snapshot_file(args.input_dir, stem, extensions, recursive=args.recursive)
             snapshots.append(Snapshot(year=year, season=season, label=f"{year}_{season}", path=path))
     return snapshots
 
