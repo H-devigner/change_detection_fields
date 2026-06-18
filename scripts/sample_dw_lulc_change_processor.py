@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,6 +59,7 @@ DW_COLORS = {
 }
 
 CROP_CLASS = 4
+LOGGER = logging.getLogger("dw_lulc_change")
 
 
 @dataclass(frozen=True)
@@ -117,7 +121,43 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fail instead of aligning rasters to the first snapshot grid.",
     )
+    parser.add_argument(
+        "--skip-figures",
+        action="store_true",
+        help="Skip PNG figure exports. Useful for fast diagnostic runs.",
+    )
+    parser.add_argument(
+        "--skip-rasters",
+        action="store_true",
+        help="Skip GeoTIFF change raster exports. CSV tables are still written.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Only print warnings and errors.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print extra debug logs.",
+    )
     return parser.parse_args()
+
+
+def setup_logging(args: argparse.Namespace) -> None:
+    if args.debug:
+        level = logging.DEBUG
+    elif args.quiet:
+        level = logging.WARNING
+    else:
+        level = logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stdout,
+        force=True,
+    )
 
 
 def parse_csv_ints(raw: str) -> list[int]:
@@ -198,6 +238,7 @@ def discover_snapshots(args: argparse.Namespace) -> list[Snapshot]:
         for season in seasons:
             stem = args.filename_template.format(year=year, season=season)
             path = find_snapshot_file(args.input_dir, stem, extensions, recursive=args.recursive)
+            LOGGER.info("Discovered %s -> %s", f"{year}_{season}", path)
             snapshots.append(Snapshot(year=year, season=season, label=f"{year}_{season}", path=path))
     return snapshots
 
@@ -222,6 +263,7 @@ def read_aligned(snapshot: Snapshot, ref_profile: dict, no_reproject: bool) -> t
         )
         valid = np.ones((ref_profile["height"], ref_profile["width"]), dtype=bool)
         if same_grid:
+            LOGGER.debug("%s already matches reference grid", snapshot.label)
             array = src.read(1)
             if src.nodata is not None:
                 valid &= array != src.nodata
@@ -230,6 +272,7 @@ def read_aligned(snapshot: Snapshot, ref_profile: dict, no_reproject: bool) -> t
         if no_reproject:
             raise ValueError(f"Raster grid differs from reference: {snapshot.path}")
 
+        LOGGER.info("Aligning %s to reference grid with nearest-neighbor resampling", snapshot.label)
         array = np.zeros((ref_profile["height"], ref_profile["width"]), dtype=src.dtypes[0])
         reproject(
             source=rasterio.band(src, 1),
@@ -388,8 +431,21 @@ def save_pair_trend(path: Path, summary: pd.DataFrame) -> None:
 
 
 def main() -> None:
+    total_start = time.perf_counter()
     args = parse_args()
+    setup_logging(args)
+    LOGGER.info("Starting Dynamic World LULC change processor")
+    LOGGER.info("Input directory: %s", args.input_dir)
+    LOGGER.info("Output directory: %s", args.output_dir)
+
+    discovery_start = time.perf_counter()
     snapshots = discover_snapshots(args)
+    LOGGER.info(
+        "Discovered %d snapshots in %.1fs",
+        len(snapshots),
+        time.perf_counter() - discovery_start,
+    )
+
     output_dir = args.output_dir
     rasters_dir = output_dir / "rasters"
     figures_dir = output_dir / "figures"
@@ -399,25 +455,55 @@ def main() -> None:
     figures_dir.mkdir(parents=True, exist_ok=True)
     tables_dir.mkdir(parents=True, exist_ok=True)
 
+    LOGGER.info("Reading reference grid from %s", snapshots[0].path)
     _, ref_profile, _ = read_reference(snapshots[0])
     nodata_values = set(parse_csv_ints(args.nodata_values))
     px_ha = pixel_area_ha(ref_profile)
+    LOGGER.info(
+        "Reference grid: %sx%s, CRS=%s, approx pixel area=%.6f ha",
+        ref_profile["width"],
+        ref_profile["height"],
+        ref_profile.get("crs"),
+        px_ha,
+    )
 
     arrays: dict[str, np.ndarray] = {}
     valids: dict[str, np.ndarray] = {}
     class_count_rows = []
-    for snapshot in snapshots:
+    for index, snapshot in enumerate(snapshots, start=1):
+        snapshot_start = time.perf_counter()
+        LOGGER.info("Reading snapshot %d/%d: %s", index, len(snapshots), snapshot.label)
         array, valid = read_aligned(snapshot, ref_profile, no_reproject=args.no_reproject)
         for nodata_value in nodata_values:
             valid &= array != nodata_value
         arrays[snapshot.label] = array
         valids[snapshot.label] = valid
         class_count_rows.extend(class_counts(array, valid, snapshot, px_ha))
-        save_class_map(figures_dir / "snapshots" / f"{snapshot.label}.png", array, valid, snapshot.label)
+        valid_pixels = int(valid.sum())
+        LOGGER.info(
+            "Loaded %s: shape=%s, dtype=%s, valid_pixels=%d, elapsed=%.1fs",
+            snapshot.label,
+            array.shape,
+            array.dtype,
+            valid_pixels,
+            time.perf_counter() - snapshot_start,
+        )
+        if not args.skip_figures:
+            fig_start = time.perf_counter()
+            save_class_map(figures_dir / "snapshots" / f"{snapshot.label}.png", array, valid, snapshot.label)
+            LOGGER.info(
+                "Saved snapshot figure for %s in %.1fs",
+                snapshot.label,
+                time.perf_counter() - fig_start,
+            )
 
     pair_summaries = []
     transition_all = []
-    for previous, current in zip(snapshots[:-1], snapshots[1:]):
+    pair_total = max(0, len(snapshots) - 1)
+    for pair_index, (previous, current) in enumerate(zip(snapshots[:-1], snapshots[1:]), start=1):
+        pair_start = time.perf_counter()
+        pair_label = f"{previous.label}_to_{current.label}"
+        LOGGER.info("Processing adjacent pair %d/%d: %s", pair_index, pair_total, pair_label)
         from_arr = arrays[previous.label]
         to_arr = arrays[current.label]
         valid = valids[previous.label] & valids[current.label]
@@ -435,33 +521,41 @@ def main() -> None:
         changed_mask[changed] = 1
         changed_mask[~valid] = 255
 
-        pair_label = f"{previous.label}_to_{current.label}"
-        write_raster(rasters_dir / f"{pair_label}_changed_mask.tif", changed_mask, ref_profile, nodata=255)
-        write_raster(rasters_dir / f"{pair_label}_crop_change_state.tif", crop_state, ref_profile, nodata=255)
-        write_raster(rasters_dir / f"{pair_label}_transition_code.tif", transition_code, ref_profile, nodata=65535)
-        save_binary_map(figures_dir / "pairs" / f"{pair_label}_changed.png", changed, f"Changed pixels: {pair_label}")
-        save_binary_map(
-            figures_dir / "pairs" / f"{pair_label}_crop_gain.png",
-            valid & (from_arr != CROP_CLASS) & (to_arr == CROP_CLASS),
-            f"Crop gain: {pair_label}",
-            color="#2ca02c",
-        )
-        save_binary_map(
-            figures_dir / "pairs" / f"{pair_label}_crop_loss.png",
-            valid & (from_arr == CROP_CLASS) & (to_arr != CROP_CLASS),
-            f"Crop loss: {pair_label}",
-            color="#d62728",
-        )
+        if not args.skip_rasters:
+            raster_start = time.perf_counter()
+            write_raster(rasters_dir / f"{pair_label}_changed_mask.tif", changed_mask, ref_profile, nodata=255)
+            write_raster(rasters_dir / f"{pair_label}_crop_change_state.tif", crop_state, ref_profile, nodata=255)
+            write_raster(rasters_dir / f"{pair_label}_transition_code.tif", transition_code, ref_profile, nodata=65535)
+            LOGGER.info("Saved rasters for %s in %.1fs", pair_label, time.perf_counter() - raster_start)
+        if not args.skip_figures:
+            fig_start = time.perf_counter()
+            save_binary_map(figures_dir / "pairs" / f"{pair_label}_changed.png", changed, f"Changed pixels: {pair_label}")
+            save_binary_map(
+                figures_dir / "pairs" / f"{pair_label}_crop_gain.png",
+                valid & (from_arr != CROP_CLASS) & (to_arr == CROP_CLASS),
+                f"Crop gain: {pair_label}",
+                color="#2ca02c",
+            )
+            save_binary_map(
+                figures_dir / "pairs" / f"{pair_label}_crop_loss.png",
+                valid & (from_arr == CROP_CLASS) & (to_arr != CROP_CLASS),
+                f"Crop loss: {pair_label}",
+                color="#d62728",
+            )
+            LOGGER.info("Saved pair figures for %s in %.1fs", pair_label, time.perf_counter() - fig_start)
         pair_summaries.append(pair_summary(from_arr, to_arr, valid, previous.label, current.label, px_ha))
         transition_all.extend(transition_rows(from_arr, to_arr, valid, previous.label, current.label, px_ha))
+        LOGGER.info("Finished %s in %.1fs", pair_label, time.perf_counter() - pair_start)
 
+    LOGGER.info("Writing CSV summary tables")
     class_counts_df = pd.DataFrame(class_count_rows)
     pair_summary_df = pd.DataFrame(pair_summaries)
     transitions_df = pd.DataFrame(transition_all)
     class_counts_df.to_csv(tables_dir / "snapshot_class_counts.csv", index=False)
     pair_summary_df.to_csv(tables_dir / "adjacent_pair_summary.csv", index=False)
     transitions_df.to_csv(tables_dir / "adjacent_transition_matrix_long.csv", index=False)
-    save_pair_trend(figures_dir / "adjacent_change_trend.png", pair_summary_df)
+    if not args.skip_figures:
+        save_pair_trend(figures_dir / "adjacent_change_trend.png", pair_summary_df)
 
     manifest = {
         "input_dir": str(args.input_dir.resolve()),
@@ -478,9 +572,10 @@ def main() -> None:
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    print(f"Processed {len(snapshots)} snapshots")
-    print(f"Adjacent comparisons: {len(pair_summaries)}")
-    print(f"Output directory: {output_dir}")
+    LOGGER.info("Processed %d snapshots", len(snapshots))
+    LOGGER.info("Adjacent comparisons: %d", len(pair_summaries))
+    LOGGER.info("Output directory: %s", output_dir)
+    LOGGER.info("Total elapsed time: %.1fs", time.perf_counter() - total_start)
 
 
 if __name__ == "__main__":

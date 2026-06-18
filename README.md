@@ -61,6 +61,22 @@ python scripts/sample_dw_lulc_change_processor.py \
   --output-dir data/processed/kursh_2021_2023_dw_lulc_sample
 ```
 
+The script logs progress by default. For a fast diagnostic run that only writes CSV tables:
+
+```bash
+python scripts/sample_dw_lulc_change_processor.py \
+  --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
+  --years 2021,2022,2023 \
+  --seasons february_april,june_august \
+  --filename-template "kursh_{year}_{season}__dw_lulc" \
+  --recursive \
+  --skip-figures \
+  --skip-rasters \
+  --output-dir data/processed/kursh_2021_2023_dw_lulc_sample_fast_check
+```
+
+Use `--debug` for extra detail or `--quiet` to show only warnings/errors.
+
 ## Outputs
 
 ```text
