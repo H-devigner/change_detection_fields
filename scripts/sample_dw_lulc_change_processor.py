@@ -351,11 +351,12 @@ def class_counts(array: np.ndarray, valid: np.ndarray, snapshot: Snapshot, px_ha
     return rows
 
 
-def transition_rows(from_arr: np.ndarray, to_arr: np.ndarray, valid: np.ndarray, from_label: str, to_label: str, px_ha: float) -> list[dict]:
+def transition_rows(transition_code: np.ndarray, valid: np.ndarray, from_label: str, to_label: str, px_ha: float) -> list[dict]:
     rows = []
-    encoded = (from_arr.astype(np.int32) * 1000 + to_arr.astype(np.int32))[valid]
-    values, counts = np.unique(encoded, return_counts=True)
-    for encoded_value, count in zip(values, counts):
+    counts = np.bincount(transition_code[valid].ravel())
+    values = np.flatnonzero(counts)
+    for encoded_value in values:
+        count = int(counts[encoded_value])
         from_class = int(encoded_value // 1000)
         to_class = int(encoded_value % 1000)
         rows.append(
@@ -366,7 +367,7 @@ def transition_rows(from_arr: np.ndarray, to_arr: np.ndarray, valid: np.ndarray,
                 "from_class_name": DW_CLASSES.get(from_class, f"class_{from_class}"),
                 "to_class_id": to_class,
                 "to_class_name": DW_CLASSES.get(to_class, f"class_{to_class}"),
-                "pixels": int(count),
+                "pixels": count,
                 "area_ha": float(count * px_ha),
             }
         )
@@ -591,7 +592,13 @@ def main() -> None:
             )
             LOGGER.info("Saved pair figures for %s in %.1fs", pair_label, time.perf_counter() - fig_start)
         pair_summaries.append(pair_summary(from_arr, to_arr, valid, previous.label, current.label, px_ha))
-        transition_all.extend(transition_rows(from_arr, to_arr, valid, previous.label, current.label, px_ha))
+        transition_start = time.perf_counter()
+        transition_all.extend(transition_rows(transition_code, valid, previous.label, current.label, px_ha))
+        LOGGER.info(
+            "Computed transition table for %s in %.1fs",
+            pair_label,
+            time.perf_counter() - transition_start,
+        )
         LOGGER.info("Finished %s in %.1fs", pair_label, time.perf_counter() - pair_start)
 
     LOGGER.info("Writing CSV summary tables")
