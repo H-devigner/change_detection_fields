@@ -126,6 +126,15 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated raster extensions to try inside files or matching snapshot directories.",
     )
     parser.add_argument(
+        "--snapshot-raster-glob",
+        default="",
+        help=(
+            "Optional relative glob used inside each snapshot directory, for example "
+            "'02_clipped_mosaics/36RXT.tif' or '02_clipped_mosaics/*.tif'. "
+            "Use this when run folders contain multiple raster products."
+        ),
+    )
+    parser.add_argument(
         "--recursive",
         action="store_true",
         help="Search recursively inside --input-dir for snapshot files/directories.",
@@ -139,6 +148,11 @@ def parse_args() -> argparse.Namespace:
         "--no-reproject",
         action="store_true",
         help="Fail instead of aligning rasters to the first snapshot grid.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only discover and print snapshot paths; do not read rasters or write outputs.",
     )
     parser.add_argument(
         "--skip-figures",
@@ -213,7 +227,23 @@ def candidate_listing(input_dir: Path, stem: str) -> str:
     return "no nearby candidates matched the expected stem"
 
 
-def pick_raster_from_directory(directory: Path, extensions: list[str]) -> Path | None:
+def pick_raster_from_directory(directory: Path, extensions: list[str], raster_glob: str = "") -> Path | None:
+    if raster_glob:
+        matches = sorted(
+            p for p in directory.glob(raster_glob)
+            if p.is_file() and not p.name.startswith(".") and ".aux.xml" not in p.name
+        )
+        if not matches:
+            return None
+        if len(matches) > 1:
+            candidates = ", ".join(str(path.relative_to(directory)) for path in matches[:20])
+            raise ValueError(
+                f"Snapshot directory {directory} has multiple rasters matching "
+                f"--snapshot-raster-glob '{raster_glob}': {candidates}. "
+                "Use a more specific glob."
+            )
+        return matches[0]
+
     matches: list[Path] = []
     for ext in extensions:
         matches.extend(directory.rglob(f"*{ext}"))
@@ -229,13 +259,18 @@ def pick_raster_from_directory(directory: Path, extensions: list[str]) -> Path |
         p for p in matches
         if any(token in p.name.lower() for token in ("field", "mask", "delineation", "dw", "lulc"))
     ]
-    return sorted(preferred or matches, key=lambda p: (len(p.parts), p.name))[0]
+    ranked = sorted(preferred or matches, key=lambda p: (len(p.parts), p.name))
+    candidates = ", ".join(str(path.relative_to(directory)) for path in ranked[:20])
+    raise ValueError(
+        f"Snapshot directory {directory} contains multiple candidate rasters: {candidates}. "
+        "Pass --snapshot-raster-glob to select the intended file."
+    )
 
 
-def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recursive: bool) -> Path:
+def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recursive: bool, raster_glob: str) -> Path:
     directory_candidate = input_dir / stem
     if directory_candidate.is_dir():
-        raster = pick_raster_from_directory(directory_candidate, extensions)
+        raster = pick_raster_from_directory(directory_candidate, extensions, raster_glob)
         if raster is not None:
             return raster
 
@@ -243,14 +278,11 @@ def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recurs
         candidate = input_dir / f"{stem}{ext}"
         if candidate.exists():
             return candidate
-    matches = sorted(input_dir.glob(f"{stem}.*"))
-    if matches:
-        return matches[0]
 
     if recursive:
         directory_matches = sorted(p for p in input_dir.rglob(stem) if p.is_dir())
         for directory_match in directory_matches:
-            raster = pick_raster_from_directory(directory_match, extensions)
+            raster = pick_raster_from_directory(directory_match, extensions, raster_glob)
             if raster is not None:
                 return raster
         for ext in extensions:
@@ -273,7 +305,13 @@ def discover_snapshots(args: argparse.Namespace) -> list[Snapshot]:
     for year in years:
         for season in seasons:
             stem = args.filename_template.format(year=year, season=season)
-            path = find_snapshot_file(args.input_dir, stem, extensions, recursive=args.recursive)
+            path = find_snapshot_file(
+                args.input_dir,
+                stem,
+                extensions,
+                recursive=args.recursive,
+                raster_glob=args.snapshot_raster_glob,
+            )
             LOGGER.info("Discovered %s -> %s", f"{year}_{season}", path)
             snapshots.append(Snapshot(year=year, season=season, label=f"{year}_{season}", path=path))
     return snapshots
@@ -801,6 +839,11 @@ def main() -> None:
         len(snapshots),
         time.perf_counter() - discovery_start,
     )
+    if args.dry_run:
+        LOGGER.info("Dry run complete. Selected snapshots:")
+        for snapshot in snapshots:
+            LOGGER.info("%s -> %s", snapshot.label, snapshot.path)
+        return
 
     output_dir = args.output_dir
     rasters_dir = output_dir / "rasters"

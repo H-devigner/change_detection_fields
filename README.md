@@ -69,11 +69,30 @@ python scripts/sample_field_change_processor.py \
   --years 2021,2022,2023 \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
+  --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
   --recursive \
   --pair-mode adjacent \
   --preview-max-size 2048 \
   --output-dir data/processed/kursh_2021_2023_field_sample
 ```
+
+Before a full run, verify discovery only:
+
+```bash
+python scripts/sample_field_change_processor.py \
+  --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
+  --years 2021,2022,2023 \
+  --seasons february_april,june_august \
+  --filename-template "kursh_{year}_{season}__dw_lulc" \
+  --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
+  --recursive \
+  --dry-run
+```
+
+If the tile name is different, replace the glob with a more general selector,
+for example `--snapshot-raster-glob "02_clipped_mosaics/*.tif"`. If that matches
+more than one raster per snapshot, the script stops and asks for a stricter glob
+instead of guessing.
 
 Default comparisons with `--pair-mode adjacent`:
 
@@ -113,6 +132,7 @@ python scripts/sample_field_change_processor.py \
   --years 2021,2022,2023 \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
+  --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
   --recursive \
   --pair-mode adjacent \
   --skip-figures \
