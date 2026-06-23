@@ -58,8 +58,14 @@ python scripts/sample_dw_lulc_change_processor.py \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
   --recursive \
+  --preview-max-size 2048 \
   --output-dir data/processed/kursh_2021_2023_dw_lulc_sample
 ```
+
+GeoTIFF outputs are written as tiled BigTIFF files, so large rasters above the classic
+4 GB TIFF limit are supported. PNG figures are downsampled previews by default with
+`--preview-max-size 2048`; use `--preview-max-size 0` only if you explicitly need
+full-resolution PNG rendering.
 
 The script logs progress by default. For a fast diagnostic run that only writes CSV tables:
 

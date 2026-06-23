@@ -132,6 +132,12 @@ def parse_args() -> argparse.Namespace:
         help="Skip GeoTIFF change raster exports. CSV tables are still written.",
     )
     parser.add_argument(
+        "--preview-max-size",
+        type=int,
+        default=2048,
+        help="Maximum width/height for PNG previews. Use 0 for full-resolution figures.",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Only print warnings and errors.",
@@ -315,9 +321,16 @@ def write_raster(path: Path, array: np.ndarray, profile: dict, nodata: int) -> N
         dtype=str(array.dtype),
         compress="lzw",
         nodata=nodata,
+        BIGTIFF="YES",
+        tiled=True,
+        blockxsize=512,
+        blockysize=512,
     )
+    write_start = time.perf_counter()
+    LOGGER.info("Writing raster %s: shape=%s, dtype=%s, BigTIFF=YES", path.name, array.shape, array.dtype)
     with rasterio.open(path, "w", **out_profile) as dst:
         dst.write(array, 1)
+    LOGGER.info("Wrote raster %s in %.1fs", path.name, time.perf_counter() - write_start)
 
 
 def class_counts(array: np.ndarray, valid: np.ndarray, snapshot: Snapshot, px_ha: float) -> list[dict]:
@@ -385,29 +398,44 @@ def pair_summary(from_arr: np.ndarray, to_arr: np.ndarray, valid: np.ndarray, fr
     }
 
 
-def save_class_map(path: Path, array: np.ndarray, valid: np.ndarray, title: str) -> None:
+def preview_step(shape: tuple[int, ...], max_size: int) -> int:
+    if max_size <= 0:
+        return 1
+    return max(1, int(np.ceil(max(shape[:2]) / max_size)))
+
+
+def rgba8(color: str, alpha: float = 1.0) -> tuple[int, int, int, int]:
+    return tuple(int(round(channel * 255)) for channel in mcolors.to_rgba(color, alpha=alpha))
+
+
+def save_class_map(path: Path, array: np.ndarray, valid: np.ndarray, title: str, max_size: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    rgb = np.zeros((*array.shape, 4), dtype=float)
+    step = preview_step(array.shape, max_size)
+    preview_array = array[::step, ::step]
+    preview_valid = valid[::step, ::step]
+    rgb = np.zeros((*preview_array.shape, 4), dtype=np.uint8)
     for class_id, color in DW_COLORS.items():
-        mask = valid & (array == class_id)
-        rgb[mask] = mcolors.to_rgba(color, alpha=1.0)
-    rgb[~valid] = (0, 0, 0, 0)
+        mask = preview_valid & (preview_array == class_id)
+        rgb[mask] = rgba8(color)
+    rgb[~preview_valid] = (0, 0, 0, 0)
     plt.figure(figsize=(9, 9))
-    plt.imshow(rgb)
-    plt.title(title)
+    plt.imshow(rgb, interpolation="nearest")
+    plt.title(f"{title} (preview 1:{step})" if step > 1 else title)
     plt.axis("off")
     plt.tight_layout()
     plt.savefig(path, dpi=180)
     plt.close()
 
 
-def save_binary_map(path: Path, mask: np.ndarray, title: str, color: str = "#d62728") -> None:
+def save_binary_map(path: Path, mask: np.ndarray, title: str, max_size: int, color: str = "#d62728") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    rgba = np.zeros((*mask.shape, 4), dtype=float)
-    rgba[mask] = mcolors.to_rgba(color, alpha=1.0)
+    step = preview_step(mask.shape, max_size)
+    preview_mask = mask[::step, ::step]
+    rgba = np.zeros((*preview_mask.shape, 4), dtype=np.uint8)
+    rgba[preview_mask] = rgba8(color)
     plt.figure(figsize=(9, 9))
-    plt.imshow(rgba)
-    plt.title(title)
+    plt.imshow(rgba, interpolation="nearest")
+    plt.title(f"{title} (preview 1:{step})" if step > 1 else title)
     plt.axis("off")
     plt.tight_layout()
     plt.savefig(path, dpi=180)
@@ -437,6 +465,12 @@ def main() -> None:
     LOGGER.info("Starting Dynamic World LULC change processor")
     LOGGER.info("Input directory: %s", args.input_dir)
     LOGGER.info("Output directory: %s", args.output_dir)
+    if args.skip_figures:
+        LOGGER.info("PNG figure export: disabled")
+    elif args.preview_max_size <= 0:
+        LOGGER.info("PNG figure export: full resolution")
+    else:
+        LOGGER.info("PNG figure export: preview max dimension=%d px", args.preview_max_size)
 
     discovery_start = time.perf_counter()
     snapshots = discover_snapshots(args)
@@ -490,7 +524,13 @@ def main() -> None:
         )
         if not args.skip_figures:
             fig_start = time.perf_counter()
-            save_class_map(figures_dir / "snapshots" / f"{snapshot.label}.png", array, valid, snapshot.label)
+            save_class_map(
+                figures_dir / "snapshots" / f"{snapshot.label}.png",
+                array,
+                valid,
+                snapshot.label,
+                max_size=args.preview_max_size,
+            )
             LOGGER.info(
                 "Saved snapshot figure for %s in %.1fs",
                 snapshot.label,
@@ -529,17 +569,24 @@ def main() -> None:
             LOGGER.info("Saved rasters for %s in %.1fs", pair_label, time.perf_counter() - raster_start)
         if not args.skip_figures:
             fig_start = time.perf_counter()
-            save_binary_map(figures_dir / "pairs" / f"{pair_label}_changed.png", changed, f"Changed pixels: {pair_label}")
+            save_binary_map(
+                figures_dir / "pairs" / f"{pair_label}_changed.png",
+                changed,
+                f"Changed pixels: {pair_label}",
+                max_size=args.preview_max_size,
+            )
             save_binary_map(
                 figures_dir / "pairs" / f"{pair_label}_crop_gain.png",
                 valid & (from_arr != CROP_CLASS) & (to_arr == CROP_CLASS),
                 f"Crop gain: {pair_label}",
+                max_size=args.preview_max_size,
                 color="#2ca02c",
             )
             save_binary_map(
                 figures_dir / "pairs" / f"{pair_label}_crop_loss.png",
                 valid & (from_arr == CROP_CLASS) & (to_arr != CROP_CLASS),
                 f"Crop loss: {pair_label}",
+                max_size=args.preview_max_size,
                 color="#d62728",
             )
             LOGGER.info("Saved pair figures for %s in %.1fs", pair_label, time.perf_counter() - fig_start)
