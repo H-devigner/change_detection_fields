@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Sample auxiliary Dynamic World LULC change processor.
+"""Sample agricultural field raster change processor.
 
-This is intended as context for field-delineation change work. If both seasons
-inside a year reuse the same yearly LULC product, use the default pair mode to
-compare same seasons across years rather than season-to-season inside one year.
+This compares agricultural field detections through time. A pixel is treated as
+field when it is a non-zero valid value by default, which supports binary masks
+and rasters where each delineated field has a separate positive object ID.
 
 The default file pattern targets names like:
   kursh_2021_february_april__dw_lulc.tif
@@ -38,32 +38,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-DW_CLASSES = {
-    0: "water",
-    1: "trees",
-    2: "grass",
-    3: "flooded_vegetation",
-    4: "crops",
-    5: "shrub_and_scrub",
-    6: "built",
-    7: "bare",
-    8: "snow_and_ice",
-}
-
-DW_COLORS = {
-    0: "#419bdf",
-    1: "#397d49",
-    2: "#88b053",
-    3: "#7a87c6",
-    4: "#e49635",
-    5: "#dfc35a",
-    6: "#c4281b",
-    7: "#a59b8f",
-    8: "#b39fe1",
-}
-
-CROP_CLASS = 4
-LOGGER = logging.getLogger("dw_lulc_change")
+LOGGER = logging.getLogger("field_change")
 
 CHANGED_MASK_COLORMAP = {
     0: (245, 245, 238, 255),
@@ -71,11 +46,19 @@ CHANGED_MASK_COLORMAP = {
     255: (0, 0, 0, 0),
 }
 
-CROP_STATE_COLORMAP = {
+FIELD_STATE_COLORMAP = {
     0: (245, 245, 238, 255),
     1: (44, 160, 44, 255),
     2: (214, 39, 40, 255),
     3: (31, 119, 180, 255),
+    255: (0, 0, 0, 0),
+}
+
+FIELD_TRANSITION_COLORMAP = {
+    0: (245, 245, 238, 255),
+    1: (31, 119, 180, 255),
+    10: (214, 39, 40, 255),
+    11: (44, 160, 44, 255),
     255: (0, 0, 0, 0),
 }
 
@@ -90,18 +73,18 @@ class Snapshot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Process sample 2021-2023 Dynamic World LULC seasonal change."
+        description="Process sample 2021-2023 agricultural field raster change."
     )
     parser.add_argument(
         "--input-dir",
         required=True,
         type=Path,
-        help="Directory containing LULC raster snapshots.",
+        help="Directory containing agricultural field raster snapshots.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/processed/change_detection/kursh_2021_2023_dw_lulc_sample"),
+        default=Path("data/processed/change_detection/kursh_2021_2023_field_sample"),
         help="Output directory for rasters, tables, and figures.",
     )
     parser.add_argument(
@@ -117,15 +100,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--filename-template",
         default="kursh_{year}_{season}__dw_lulc",
-        help="Filename stem template. Extension is discovered automatically.",
+        help="Filename stem template. Extension is discovered automatically. The default keeps the existing folder naming.",
     )
     parser.add_argument(
         "--pair-mode",
         choices=("same-season-yearly", "same-season-all-years", "adjacent", "all"),
-        default="same-season-yearly",
+        default="adjacent",
         help=(
-            "Comparison pairs to run. The default skips same-year season-to-season "
-            "LULC comparisons and compares each season across consecutive years."
+            "Comparison pairs to run. The default follows the chronological "
+            "snapshot order, including season-to-season field comparisons."
+        ),
+    )
+    parser.add_argument(
+        "--field-values",
+        default="",
+        help=(
+            "Optional comma-separated raster values to treat as field. "
+            "Default: every non-zero valid value is field."
         ),
     )
     parser.add_argument(
@@ -224,7 +215,7 @@ def pick_raster_from_directory(directory: Path, extensions: list[str]) -> Path |
         return matches[0]
     preferred = [
         p for p in matches
-        if any(token in p.name.lower() for token in ("dw", "lulc", "classification", "class"))
+        if any(token in p.name.lower() for token in ("field", "mask", "delineation", "dw", "lulc"))
     ]
     return sorted(preferred or matches, key=lambda p: (len(p.parts), p.name))[0]
 
@@ -304,14 +295,9 @@ def build_pairs(snapshots: list[Snapshot], pair_mode: str) -> list[tuple[Snapsho
     return pairs
 
 
-def read_reference(snapshot: Snapshot) -> tuple[np.ndarray, dict, np.ndarray]:
+def read_reference_profile(snapshot: Snapshot) -> dict:
     with rasterio.open(snapshot.path) as src:
-        array = src.read(1)
-        profile = src.profile.copy()
-        valid = np.ones(array.shape, dtype=bool)
-        if src.nodata is not None:
-            valid &= array != src.nodata
-    return array, profile, valid
+        return src.profile.copy()
 
 
 def read_aligned(snapshot: Snapshot, ref_profile: dict, no_reproject: bool) -> tuple[np.ndarray, np.ndarray]:
@@ -396,56 +382,66 @@ def write_raster(
     LOGGER.info("Wrote raster %s in %.1fs", path.name, time.perf_counter() - write_start)
 
 
-def class_counts(array: np.ndarray, valid: np.ndarray, snapshot: Snapshot, px_ha: float) -> list[dict]:
-    rows = []
-    for value, count in zip(*np.unique(array[valid], return_counts=True)):
-        value = int(value)
-        rows.append(
-            {
-                "snapshot": snapshot.label,
-                "year": snapshot.year,
-                "season": snapshot.season,
-                "class_id": value,
-                "class_name": DW_CLASSES.get(value, f"class_{value}"),
-                "pixels": int(count),
-                "area_ha": float(count * px_ha),
-            }
-        )
-    return rows
+def make_field_mask(array: np.ndarray, valid: np.ndarray, field_values: set[int]) -> np.ndarray:
+    if field_values:
+        return valid & np.isin(array, list(field_values))
+    return valid & (array != 0)
 
 
-def transition_rows(transition_code: np.ndarray, valid: np.ndarray, from_label: str, to_label: str, px_ha: float) -> list[dict]:
+def snapshot_field_summary(field: np.ndarray, valid: np.ndarray, snapshot: Snapshot, px_ha: float) -> dict:
+    valid_pixels = int(valid.sum())
+    field_pixels = int((valid & field).sum())
+    non_field_pixels = valid_pixels - field_pixels
+    return {
+        "snapshot": snapshot.label,
+        "year": snapshot.year,
+        "season": snapshot.season,
+        "valid_pixels": valid_pixels,
+        "valid_area_ha": float(valid_pixels * px_ha),
+        "field_pixels": field_pixels,
+        "field_area_ha": float(field_pixels * px_ha),
+        "field_pct": float(field_pixels / valid_pixels) if valid_pixels else 0.0,
+        "non_field_pixels": non_field_pixels,
+        "non_field_area_ha": float(non_field_pixels * px_ha),
+    }
+
+
+def field_transition_rows(from_field: np.ndarray, to_field: np.ndarray, valid: np.ndarray, from_label: str, to_label: str, px_ha: float) -> list[dict]:
+    transitions = [
+        (0, "non_field", 0, "non_field", valid & (~from_field) & (~to_field)),
+        (0, "non_field", 1, "field", valid & (~from_field) & to_field),
+        (1, "field", 0, "non_field", valid & from_field & (~to_field)),
+        (1, "field", 1, "field", valid & from_field & to_field),
+    ]
     rows = []
-    counts = np.bincount(transition_code[valid].ravel())
-    values = np.flatnonzero(counts)
-    for encoded_value in values:
-        count = int(counts[encoded_value])
-        from_class = int(encoded_value // 1000)
-        to_class = int(encoded_value % 1000)
+    for from_state, from_name, to_state, to_name, mask in transitions:
+        pixels = int(mask.sum())
         rows.append(
             {
                 "from_snapshot": from_label,
                 "to_snapshot": to_label,
-                "from_class_id": from_class,
-                "from_class_name": DW_CLASSES.get(from_class, f"class_{from_class}"),
-                "to_class_id": to_class,
-                "to_class_name": DW_CLASSES.get(to_class, f"class_{to_class}"),
-                "pixels": count,
-                "area_ha": float(count * px_ha),
+                "from_state": from_state,
+                "from_state_name": from_name,
+                "to_state": to_state,
+                "to_state_name": to_name,
+                "change_type": f"{from_name}_to_{to_name}",
+                "pixels": pixels,
+                "area_ha": float(pixels * px_ha),
             }
         )
     return rows
 
 
-def pair_summary(from_arr: np.ndarray, to_arr: np.ndarray, valid: np.ndarray, from_label: str, to_label: str, px_ha: float) -> dict:
-    changed = valid & (from_arr != to_arr)
-    from_crop = valid & (from_arr == CROP_CLASS)
-    to_crop = valid & (to_arr == CROP_CLASS)
-    crop_gain = valid & (~from_crop) & to_crop
-    crop_loss = valid & from_crop & (~to_crop)
-    crop_stable = valid & from_crop & to_crop
+def pair_summary(from_field: np.ndarray, to_field: np.ndarray, valid: np.ndarray, from_label: str, to_label: str, px_ha: float) -> dict:
+    changed = valid & (from_field != to_field)
+    field_gain = valid & (~from_field) & to_field
+    field_loss = valid & from_field & (~to_field)
+    stable_field = valid & from_field & to_field
+    stable_non_field = valid & (~from_field) & (~to_field)
     valid_pixels = int(valid.sum())
     changed_pixels = int(changed.sum())
+    from_field_pixels = int((valid & from_field).sum())
+    to_field_pixels = int((valid & to_field).sum())
     return {
         "from_snapshot": from_label,
         "to_snapshot": to_label,
@@ -454,11 +450,19 @@ def pair_summary(from_arr: np.ndarray, to_arr: np.ndarray, valid: np.ndarray, fr
         "changed_pixels": changed_pixels,
         "changed_area_ha": float(changed_pixels * px_ha),
         "changed_pct": float(changed_pixels / valid_pixels) if valid_pixels else 0.0,
-        "crop_from_area_ha": float(from_crop.sum() * px_ha),
-        "crop_to_area_ha": float(to_crop.sum() * px_ha),
-        "crop_gain_area_ha": float(crop_gain.sum() * px_ha),
-        "crop_loss_area_ha": float(crop_loss.sum() * px_ha),
-        "crop_stable_area_ha": float(crop_stable.sum() * px_ha),
+        "from_field_pixels": from_field_pixels,
+        "from_field_area_ha": float(from_field_pixels * px_ha),
+        "to_field_pixels": to_field_pixels,
+        "to_field_area_ha": float(to_field_pixels * px_ha),
+        "field_gain_pixels": int(field_gain.sum()),
+        "field_gain_area_ha": float(field_gain.sum() * px_ha),
+        "field_loss_pixels": int(field_loss.sum()),
+        "field_loss_area_ha": float(field_loss.sum() * px_ha),
+        "stable_field_pixels": int(stable_field.sum()),
+        "stable_field_area_ha": float(stable_field.sum() * px_ha),
+        "stable_non_field_pixels": int(stable_non_field.sum()),
+        "stable_non_field_area_ha": float(stable_non_field.sum() * px_ha),
+        "net_field_area_change_ha": float((to_field_pixels - from_field_pixels) * px_ha),
     }
 
 
@@ -470,14 +474,6 @@ def preview_step(shape: tuple[int, ...], max_size: int) -> int:
 
 def rgba8(color: str, alpha: float = 1.0) -> tuple[int, int, int, int]:
     return tuple(int(round(channel * 255)) for channel in mcolors.to_rgba(color, alpha=alpha))
-
-
-def class_rgba(class_id: int) -> tuple[int, int, int, int]:
-    if class_id in DW_COLORS:
-        return rgba8(DW_COLORS[class_id])
-    hue = (class_id * 0.61803398875) % 1.0
-    red, green, blue = mcolors.hsv_to_rgb((hue, 0.65, 0.85))
-    return int(red * 255), int(green * 255), int(blue * 255), 255
 
 
 def downsample_binary_any(mask: np.ndarray, max_size: int) -> tuple[np.ndarray, int]:
@@ -492,24 +488,13 @@ def downsample_binary_any(mask: np.ndarray, max_size: int) -> tuple[np.ndarray, 
     return blocks.any(axis=(1, 3)), step
 
 
-def save_class_map(path: Path, array: np.ndarray, valid: np.ndarray, title: str, max_size: int) -> None:
+def save_field_map(path: Path, field: np.ndarray, valid: np.ndarray, title: str, max_size: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    step = preview_step(array.shape, max_size)
-    preview_array = array[::step, ::step]
-    preview_valid = valid[::step, ::step]
-    rgb = np.full((*preview_array.shape, 4), rgba8("#f5f5ee"), dtype=np.uint8)
-    preview_values = np.unique(preview_array[preview_valid])
-    for value in preview_values:
-        class_id = int(value)
-        rgb[preview_valid & (preview_array == value)] = class_rgba(class_id)
+    preview_field, step = downsample_binary_any(field & valid, max_size)
+    preview_valid, _ = downsample_binary_any(valid, max_size)
+    rgb = np.full((*preview_field.shape, 4), rgba8("#f5f5ee"), dtype=np.uint8)
+    rgb[preview_field] = rgba8("#2ca02c")
     rgb[~preview_valid] = rgba8("#202020")
-    unknown_values = [int(value) for value in preview_values if int(value) not in DW_COLORS]
-    if unknown_values:
-        LOGGER.warning(
-            "%s has values outside Dynamic World 0-8 classes in the preview: %s",
-            title,
-            unknown_values[:20],
-        )
     plt.figure(figsize=(9, 9))
     plt.imshow(rgb, interpolation="nearest")
     plt.title(f"{title} (preview 1:{step})" if step > 1 else title)
@@ -541,8 +526,8 @@ def save_pair_trend(path: Path, summary: pd.DataFrame, title: str) -> None:
     ax1.set_ylabel("Changed area (%)")
     ax1.tick_params(axis="x", rotation=45)
     ax2 = ax1.twinx()
-    ax2.plot(labels, summary["crop_to_area_ha"], marker="s", color="#2ca02c", label="crop area")
-    ax2.set_ylabel("Crop area (ha)")
+    ax2.plot(labels, summary["to_field_area_ha"], marker="s", color="#2ca02c", label="field area")
+    ax2.set_ylabel("Field area (ha)")
     ax1.set_title(title)
     fig.tight_layout()
     plt.savefig(path, dpi=180)
@@ -553,7 +538,7 @@ def main() -> None:
     total_start = time.perf_counter()
     args = parse_args()
     setup_logging(args)
-    LOGGER.info("Starting Dynamic World LULC change processor")
+    LOGGER.info("Starting agricultural field raster change processor")
     LOGGER.info("Input directory: %s", args.input_dir)
     LOGGER.info("Output directory: %s", args.output_dir)
     LOGGER.info("Pair mode: %s", args.pair_mode)
@@ -582,9 +567,14 @@ def main() -> None:
     tables_dir.mkdir(parents=True, exist_ok=True)
 
     LOGGER.info("Reading reference grid from %s", snapshots[0].path)
-    _, ref_profile, _ = read_reference(snapshots[0])
+    ref_profile = read_reference_profile(snapshots[0])
     nodata_values = set(parse_csv_ints(args.nodata_values))
+    field_values = set(parse_csv_ints(args.field_values))
     px_ha = pixel_area_ha(ref_profile)
+    if field_values:
+        LOGGER.info("Field definition: values in %s", sorted(field_values))
+    else:
+        LOGGER.info("Field definition: every non-zero valid pixel")
     LOGGER.info(
         "Reference grid: %sx%s, CRS=%s, approx pixel area=%.6f ha",
         ref_profile["width"],
@@ -593,32 +583,35 @@ def main() -> None:
         px_ha,
     )
 
-    arrays: dict[str, np.ndarray] = {}
+    fields: dict[str, np.ndarray] = {}
     valids: dict[str, np.ndarray] = {}
-    class_count_rows = []
+    snapshot_rows = []
     for index, snapshot in enumerate(snapshots, start=1):
         snapshot_start = time.perf_counter()
         LOGGER.info("Reading snapshot %d/%d: %s", index, len(snapshots), snapshot.label)
         array, valid = read_aligned(snapshot, ref_profile, no_reproject=args.no_reproject)
         for nodata_value in nodata_values:
             valid &= array != nodata_value
-        arrays[snapshot.label] = array
+        field = make_field_mask(array, valid, field_values)
+        fields[snapshot.label] = field
         valids[snapshot.label] = valid
-        class_count_rows.extend(class_counts(array, valid, snapshot, px_ha))
+        snapshot_summary = snapshot_field_summary(field, valid, snapshot, px_ha)
+        snapshot_rows.append(snapshot_summary)
         valid_pixels = int(valid.sum())
         LOGGER.info(
-            "Loaded %s: shape=%s, dtype=%s, valid_pixels=%d, elapsed=%.1fs",
+            "Loaded %s: shape=%s, dtype=%s, valid_pixels=%d, field_area_ha=%.2f, elapsed=%.1fs",
             snapshot.label,
             array.shape,
             array.dtype,
             valid_pixels,
+            snapshot_summary["field_area_ha"],
             time.perf_counter() - snapshot_start,
         )
         if not args.skip_figures:
             fig_start = time.perf_counter()
-            save_class_map(
+            save_field_map(
                 figures_dir / "snapshots" / f"{snapshot.label}.png",
-                array,
+                field,
                 valid,
                 snapshot.label,
                 max_size=args.preview_max_size,
@@ -640,20 +633,20 @@ def main() -> None:
         pair_start = time.perf_counter()
         pair_label = f"{previous.label}_to_{current.label}"
         LOGGER.info("Processing pair %d/%d: %s", pair_index, pair_total, pair_label)
-        from_arr = arrays[previous.label]
-        to_arr = arrays[current.label]
+        from_field = fields[previous.label]
+        to_field = fields[current.label]
         valid = valids[previous.label] & valids[current.label]
 
-        changed = valid & (from_arr != to_arr)
-        crop_state = np.zeros(from_arr.shape, dtype=np.uint8)
-        crop_state[valid & (from_arr == CROP_CLASS) & (to_arr == CROP_CLASS)] = 1
-        crop_state[valid & (from_arr == CROP_CLASS) & (to_arr != CROP_CLASS)] = 2
-        crop_state[valid & (from_arr != CROP_CLASS) & (to_arr == CROP_CLASS)] = 3
-        crop_state[~valid] = 255
+        changed = valid & (from_field != to_field)
+        field_state = np.zeros(from_field.shape, dtype=np.uint8)
+        field_state[valid & from_field & to_field] = 1
+        field_state[valid & from_field & (~to_field)] = 2
+        field_state[valid & (~from_field) & to_field] = 3
+        field_state[~valid] = 255
 
-        transition_code = np.full(from_arr.shape, 65535, dtype=np.uint16)
-        transition_code[valid] = (from_arr[valid].astype(np.uint16) * 1000) + to_arr[valid].astype(np.uint16)
-        changed_mask = np.zeros(from_arr.shape, dtype=np.uint8)
+        transition_code = np.full(from_field.shape, 255, dtype=np.uint8)
+        transition_code[valid] = (from_field[valid].astype(np.uint8) * 10) + to_field[valid].astype(np.uint8)
+        changed_mask = np.zeros(from_field.shape, dtype=np.uint8)
         changed_mask[changed] = 1
         changed_mask[~valid] = 255
 
@@ -667,13 +660,19 @@ def main() -> None:
                 colormap=CHANGED_MASK_COLORMAP,
             )
             write_raster(
-                rasters_dir / f"{pair_label}_crop_change_state.tif",
-                crop_state,
+                rasters_dir / f"{pair_label}_field_change_state.tif",
+                field_state,
                 ref_profile,
                 nodata=255,
-                colormap=CROP_STATE_COLORMAP,
+                colormap=FIELD_STATE_COLORMAP,
             )
-            write_raster(rasters_dir / f"{pair_label}_transition_code.tif", transition_code, ref_profile, nodata=65535)
+            write_raster(
+                rasters_dir / f"{pair_label}_field_transition_code.tif",
+                transition_code,
+                ref_profile,
+                nodata=255,
+                colormap=FIELD_TRANSITION_COLORMAP,
+            )
             LOGGER.info("Saved rasters for %s in %.1fs", pair_label, time.perf_counter() - raster_start)
         if not args.skip_figures:
             fig_start = time.perf_counter()
@@ -684,44 +683,45 @@ def main() -> None:
                 max_size=args.preview_max_size,
             )
             save_binary_map(
-                figures_dir / "pairs" / f"{pair_label}_crop_gain.png",
-                valid & (from_arr != CROP_CLASS) & (to_arr == CROP_CLASS),
-                f"Crop gain: {pair_label}",
+                figures_dir / "pairs" / f"{pair_label}_field_gain.png",
+                valid & (~from_field) & to_field,
+                f"Field gain: {pair_label}",
                 max_size=args.preview_max_size,
                 color="#2ca02c",
             )
             save_binary_map(
-                figures_dir / "pairs" / f"{pair_label}_crop_loss.png",
-                valid & (from_arr == CROP_CLASS) & (to_arr != CROP_CLASS),
-                f"Crop loss: {pair_label}",
+                figures_dir / "pairs" / f"{pair_label}_field_loss.png",
+                valid & from_field & (~to_field),
+                f"Field loss: {pair_label}",
                 max_size=args.preview_max_size,
                 color="#d62728",
             )
             LOGGER.info("Saved pair figures for %s in %.1fs", pair_label, time.perf_counter() - fig_start)
-        summary = pair_summary(from_arr, to_arr, valid, previous.label, current.label, px_ha)
+        summary = pair_summary(from_field, to_field, valid, previous.label, current.label, px_ha)
         pair_summaries.append(summary)
         LOGGER.info(
-            "Pair stats for %s: changed=%.4f%%, crop_gain_ha=%.2f, crop_loss_ha=%.2f",
+            "Pair stats for %s: changed=%.4f%%, field_gain_ha=%.2f, field_loss_ha=%.2f",
             pair_label,
             summary["changed_pct"] * 100,
-            summary["crop_gain_area_ha"],
-            summary["crop_loss_area_ha"],
+            summary["field_gain_area_ha"],
+            summary["field_loss_area_ha"],
         )
         transition_start = time.perf_counter()
-        transition_all.extend(transition_rows(transition_code, valid, previous.label, current.label, px_ha))
+        transition_all.extend(field_transition_rows(from_field, to_field, valid, previous.label, current.label, px_ha))
         LOGGER.info(
-            "Computed transition table for %s in %.1fs",
+            "Computed field transition table for %s in %.1fs",
             pair_label,
             time.perf_counter() - transition_start,
         )
         LOGGER.info("Finished %s in %.1fs", pair_label, time.perf_counter() - pair_start)
 
     LOGGER.info("Writing CSV summary tables")
-    class_counts_df = pd.DataFrame(class_count_rows)
+    snapshot_df = pd.DataFrame(snapshot_rows)
     pair_summary_df = pd.DataFrame(pair_summaries)
     transitions_df = pd.DataFrame(transition_all)
-    class_counts_df.to_csv(tables_dir / "snapshot_class_counts.csv", index=False)
+    snapshot_df.to_csv(tables_dir / "snapshot_field_summary.csv", index=False)
     pair_summary_df.to_csv(tables_dir / "pair_summary.csv", index=False)
+    transitions_df.to_csv(tables_dir / "field_transition_matrix_long.csv", index=False)
     transitions_df.to_csv(tables_dir / "transition_matrix_long.csv", index=False)
     pair_summary_df.to_csv(tables_dir / "adjacent_pair_summary.csv", index=False)
     transitions_df.to_csv(tables_dir / "adjacent_transition_matrix_long.csv", index=False)
@@ -729,12 +729,12 @@ def main() -> None:
         save_pair_trend(
             figures_dir / "change_trend.png",
             pair_summary_df,
-            title=f"LULC Change Trend ({args.pair_mode})",
+            title=f"Field Change Trend ({args.pair_mode})",
         )
         save_pair_trend(
             figures_dir / "adjacent_change_trend.png",
             pair_summary_df,
-            title=f"LULC Change Trend ({args.pair_mode})",
+            title=f"Field Change Trend ({args.pair_mode})",
         )
 
     manifest = {
@@ -750,9 +750,9 @@ def main() -> None:
             for previous, current in pairs
         ],
         "outputs": {
-            "snapshot_class_counts": str((tables_dir / "snapshot_class_counts.csv").resolve()),
+            "snapshot_field_summary": str((tables_dir / "snapshot_field_summary.csv").resolve()),
             "pair_summary": str((tables_dir / "pair_summary.csv").resolve()),
-            "transition_matrix_long": str((tables_dir / "transition_matrix_long.csv").resolve()),
+            "field_transition_matrix_long": str((tables_dir / "field_transition_matrix_long.csv").resolve()),
         },
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

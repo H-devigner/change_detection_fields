@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kursh-dw-lulc-change-detection"
+name = "kursh-field-change-detection"
 version = "0.1.0"
-description = "Standalone sample Dynamic World LULC seasonal change processor."
+description = "Standalone sample agricultural field raster change processor."
 requires-python = ">=3.10"
 dependencies = [
     "matplotlib>=3.8",
@@ -13,4 +13,3 @@ dependencies = [
     "pandas>=2.0",
     "rasterio>=1.4",
 ]
-
