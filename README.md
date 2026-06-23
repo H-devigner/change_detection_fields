@@ -35,7 +35,8 @@ data/raw/kursh_dw_lulc/
 cd /Users/houcine/Desktop/from_oci/Delineate-Anything_just_folders_keeper/kursh_dw_lulc_change_detection
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
 ```
 
 ## Run

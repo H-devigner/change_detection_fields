@@ -1,0 +1,6 @@
+matplotlib>=3.8
+numpy>=1.26
+pandas>=2.0
+rasterio>=1.4
+setuptools>=68
+wheel
