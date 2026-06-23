@@ -23,6 +23,8 @@ data/raw/kursh_fields/
 Default naming pattern:
 
 ```text
+kursh_2020_february_april__dw_lulc.tif
+kursh_2020_june_august__dw_lulc.tif
 kursh_2021_february_april__dw_lulc.tif
 kursh_2021_june_august__dw_lulc.tif
 kursh_2022_february_april__dw_lulc.tif
@@ -35,7 +37,7 @@ The processor also supports the same names as directories, for example:
 
 ```text
 data/raw/kursh_dw_lulc/
-  kursh_2021_february_april__dw_lulc/
+  kursh_2020_february_april__dw_lulc/
     <any .tif/.tiff/.vrt inside>
 ```
 
@@ -54,11 +56,11 @@ pip install -r requirements.txt
 ```bash
 python scripts/sample_field_change_processor.py \
   --input-dir data/raw/kursh_fields \
-  --years 2021,2022,2023 \
+  --years 2020-2023 \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
   --pair-mode adjacent \
-  --output-dir data/processed/kursh_2021_2023_field_sample
+  --output-dir data/processed/kursh_2020_2023_field_sample
 ```
 
 If your snapshots live as run directories under another folder:
@@ -66,14 +68,14 @@ If your snapshots live as run directories under another folder:
 ```bash
 python scripts/sample_field_change_processor.py \
   --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
-  --years 2021,2022,2023 \
+  --years 2020-2023 \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
   --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
   --recursive \
   --pair-mode adjacent \
   --preview-max-size 2048 \
-  --output-dir data/processed/kursh_2021_2023_field_sample
+  --output-dir data/processed/kursh_2020_2023_field_sample
 ```
 
 Before a full run, verify discovery only:
@@ -81,7 +83,7 @@ Before a full run, verify discovery only:
 ```bash
 python scripts/sample_field_change_processor.py \
   --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
-  --years 2021,2022,2023 \
+  --years 2020-2023 \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
   --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
@@ -97,6 +99,8 @@ instead of guessing.
 Default comparisons with `--pair-mode adjacent`:
 
 ```text
+2020_february_april -> 2020_june_august
+2020_june_august -> 2021_february_april
 2021_february_april -> 2021_june_august
 2021_june_august -> 2022_february_april
 2022_february_april -> 2022_june_august
@@ -111,6 +115,13 @@ adjacent              chronological snapshot order; default
 same-season-yearly    consecutive years for each season
 same-season-all-years all cross-year combinations within each season
 all                   every from-to pair in snapshot order
+```
+
+`--years` accepts either comma lists or inclusive ranges:
+
+```text
+--years 2020,2021,2022,2023
+--years 2020-2023
 ```
 
 GeoTIFF outputs are written as tiled BigTIFF files, so large rasters above the classic
@@ -129,7 +140,7 @@ The script logs progress by default. For a fast diagnostic run that only writes 
 ```bash
 python scripts/sample_field_change_processor.py \
   --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
-  --years 2021,2022,2023 \
+  --years 2020-2023 \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
   --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
@@ -137,7 +148,7 @@ python scripts/sample_field_change_processor.py \
   --pair-mode adjacent \
   --skip-figures \
   --skip-rasters \
-  --output-dir data/processed/kursh_2021_2023_field_sample_fast_check
+  --output-dir data/processed/kursh_2020_2023_field_sample_fast_check
 ```
 
 Use `--debug` for extra detail or `--quiet` to show only warnings/errors.
@@ -172,7 +183,7 @@ state and the later snapshot is treated as the monitored state.
 ## Outputs
 
 ```text
-data/processed/kursh_2021_2023_field_sample/
+data/processed/kursh_2020_2023_field_sample/
   manifest.json
   tables/
     snapshot_field_summary.csv
@@ -201,13 +212,13 @@ workflow for following a field through time.
 ```bash
 python scripts/vector_field_change_tracker.py \
   --input-dir data/raw/kursh_vectors \
-  --years 2021,2022,2023 \
+  --years 2020-2023 \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__fields" \
   --pair-mode adjacent \
   --input-crs EPSG:4326 \
   --metric-crs EPSG:32636 \
-  --output-dir data/processed/kursh_2021_2023_vector_field_change
+  --output-dir data/processed/kursh_2020_2023_vector_field_change
 ```
 
 Vector outputs:

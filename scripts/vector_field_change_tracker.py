@@ -35,7 +35,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Track field polygon changes using overlap and IoU metrics.")
     parser.add_argument("--input-dir", required=True, type=Path, help="Directory containing vector field snapshots.")
     parser.add_argument("--output-dir", type=Path, default=Path("data/processed/vector_field_change"))
-    parser.add_argument("--years", default="2021,2022,2023")
+    parser.add_argument(
+        "--years",
+        default="2020-2023",
+        help="Years to process. Accepts comma lists like '2020,2021,2022' or inclusive ranges like '2020-2023'.",
+    )
     parser.add_argument("--seasons", default="february_april,june_august")
     parser.add_argument("--filename-template", default="kursh_{year}_{season}__fields")
     parser.add_argument("--extensions", default=".geojson,.gpkg,.shp,.json")
@@ -82,6 +86,20 @@ def parse_csv_ints(raw: str) -> list[int]:
     return [int(value.strip()) for value in raw.split(",") if value.strip()]
 
 
+def parse_years(raw: str) -> list[int]:
+    years: list[int] = []
+    for token in parse_csv_strings(raw):
+        if "-" in token:
+            start_raw, end_raw = token.split("-", 1)
+            start = int(start_raw.strip())
+            end = int(end_raw.strip())
+            step = 1 if end >= start else -1
+            years.extend(range(start, end + step, step))
+        else:
+            years.append(int(token))
+    return years
+
+
 def parse_csv_strings(raw: str) -> list[str]:
     return [value.strip() for value in raw.split(",") if value.strip()]
 
@@ -112,7 +130,7 @@ def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recurs
 
 
 def discover_snapshots(args: argparse.Namespace) -> list[VectorSnapshot]:
-    years = parse_csv_ints(args.years)
+    years = parse_years(args.years)
     seasons = parse_csv_strings(args.seasons)
     extensions = parse_csv_strings(args.extensions)
     snapshots = []

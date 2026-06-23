@@ -6,6 +6,8 @@ field when it is a non-zero valid value by default, which supports binary masks
 and rasters where each delineated field has a separate positive object ID.
 
 The default file pattern targets names like:
+  kursh_2020_february_april__dw_lulc.tif
+  kursh_2020_june_august__dw_lulc.tif
   kursh_2021_february_april__dw_lulc.tif
   kursh_2021_june_august__dw_lulc.tif
 """
@@ -74,7 +76,7 @@ class Snapshot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Process sample 2021-2023 agricultural field raster change."
+        description="Process agricultural field raster change across any requested years/seasons."
     )
     parser.add_argument(
         "--input-dir",
@@ -85,13 +87,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/processed/change_detection/kursh_2021_2023_field_sample"),
+        default=Path("data/processed/change_detection/field_change"),
         help="Output directory for rasters, tables, and figures.",
     )
     parser.add_argument(
         "--years",
-        default="2021,2022,2023",
-        help="Comma-separated years to process.",
+        default="2020-2023",
+        help="Years to process. Accepts comma lists like '2020,2021,2022' or inclusive ranges like '2020-2023'.",
     )
     parser.add_argument(
         "--seasons",
@@ -214,6 +216,20 @@ def parse_csv_ints(raw: str) -> list[int]:
     return [int(x.strip()) for x in raw.split(",") if x.strip()]
 
 
+def parse_years(raw: str) -> list[int]:
+    years: list[int] = []
+    for token in parse_csv_strings(raw):
+        if "-" in token:
+            start_raw, end_raw = token.split("-", 1)
+            start = int(start_raw.strip())
+            end = int(end_raw.strip())
+            step = 1 if end >= start else -1
+            years.extend(range(start, end + step, step))
+        else:
+            years.append(int(token))
+    return years
+
+
 def parse_csv_strings(raw: str) -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
@@ -298,7 +314,7 @@ def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recurs
 
 
 def discover_snapshots(args: argparse.Namespace) -> list[Snapshot]:
-    years = parse_csv_ints(args.years)
+    years = parse_years(args.years)
     seasons = parse_csv_strings(args.seasons)
     extensions = parse_csv_strings(args.extensions)
     snapshots = []
