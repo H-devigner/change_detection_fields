@@ -1,6 +1,13 @@
-# Kursh Dynamic World LULC Change Detection
+# Kursh Dynamic World LULC Context Change
 
-Standalone sample processor for seasonal Dynamic World LULC raster change detection.
+Standalone sample processor for Dynamic World LULC context around field-change
+work. This is not a replacement for field-delineation geometry change detection:
+use field polygons for split/merge/appearance/disappearance, and use this LULC
+processor as an auxiliary layer to summarize class context across years.
+
+If both seasonal folders in a year contain the same yearly LULC raster, same-year
+season-to-season LULC comparisons are expected to be identical. The default
+comparison mode therefore compares the same season across years.
 
 ## Expected Inputs
 
@@ -47,6 +54,7 @@ python scripts/sample_dw_lulc_change_processor.py \
   --years 2021,2022,2023 \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
+  --pair-mode same-season-yearly \
   --output-dir data/processed/kursh_2021_2023_dw_lulc_sample
 ```
 
@@ -59,8 +67,27 @@ python scripts/sample_dw_lulc_change_processor.py \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
   --recursive \
+  --pair-mode same-season-yearly \
   --preview-max-size 2048 \
   --output-dir data/processed/kursh_2021_2023_dw_lulc_sample
+```
+
+Default comparisons with `--pair-mode same-season-yearly`:
+
+```text
+2021_february_april -> 2022_february_april
+2022_february_april -> 2023_february_april
+2021_june_august -> 2022_june_august
+2022_june_august -> 2023_june_august
+```
+
+Other pair modes:
+
+```text
+same-season-yearly    consecutive years for each season; default
+same-season-all-years all cross-year combinations within each season
+adjacent              original snapshot order, including same-year season pairs
+all                   every from-to pair in snapshot order
 ```
 
 GeoTIFF outputs are written as tiled BigTIFF files, so large rasters above the classic
@@ -77,6 +104,7 @@ python scripts/sample_dw_lulc_change_processor.py \
   --seasons february_april,june_august \
   --filename-template "kursh_{year}_{season}__dw_lulc" \
   --recursive \
+  --pair-mode same-season-yearly \
   --skip-figures \
   --skip-rasters \
   --output-dir data/processed/kursh_2021_2023_dw_lulc_sample_fast_check
@@ -91,8 +119,8 @@ data/processed/kursh_2021_2023_dw_lulc_sample/
   manifest.json
   tables/
     snapshot_class_counts.csv
-    adjacent_pair_summary.csv
-    adjacent_transition_matrix_long.csv
+    pair_summary.csv
+    transition_matrix_long.csv
   rasters/
     *_changed_mask.tif
     *_crop_change_state.tif
@@ -100,5 +128,5 @@ data/processed/kursh_2021_2023_dw_lulc_sample/
   figures/
     snapshots/*.png
     pairs/*.png
-    adjacent_change_trend.png
+    change_trend.png
 ```

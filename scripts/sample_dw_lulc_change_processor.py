@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Sample change detection processor for Dynamic World LULC raster snapshots.
+"""Sample auxiliary Dynamic World LULC change processor.
+
+This is intended as context for field-delineation change work. If both seasons
+inside a year reuse the same yearly LULC product, use the default pair mode to
+compare same seasons across years rather than season-to-season inside one year.
 
 The default file pattern targets names like:
   kursh_2021_february_april__dw_lulc.tif
@@ -114,6 +118,15 @@ def parse_args() -> argparse.Namespace:
         "--filename-template",
         default="kursh_{year}_{season}__dw_lulc",
         help="Filename stem template. Extension is discovered automatically.",
+    )
+    parser.add_argument(
+        "--pair-mode",
+        choices=("same-season-yearly", "same-season-all-years", "adjacent", "all"),
+        default="same-season-yearly",
+        help=(
+            "Comparison pairs to run. The default skips same-year season-to-season "
+            "LULC comparisons and compares each season across consecutive years."
+        ),
     )
     parser.add_argument(
         "--extensions",
@@ -261,6 +274,34 @@ def discover_snapshots(args: argparse.Namespace) -> list[Snapshot]:
             LOGGER.info("Discovered %s -> %s", f"{year}_{season}", path)
             snapshots.append(Snapshot(year=year, season=season, label=f"{year}_{season}", path=path))
     return snapshots
+
+
+def build_pairs(snapshots: list[Snapshot], pair_mode: str) -> list[tuple[Snapshot, Snapshot]]:
+    if pair_mode == "adjacent":
+        return list(zip(snapshots[:-1], snapshots[1:]))
+    if pair_mode == "all":
+        return [
+            (snapshots[i], snapshots[j])
+            for i in range(len(snapshots))
+            for j in range(i + 1, len(snapshots))
+        ]
+
+    by_season: dict[str, list[Snapshot]] = {}
+    for snapshot in snapshots:
+        by_season.setdefault(snapshot.season, []).append(snapshot)
+
+    pairs: list[tuple[Snapshot, Snapshot]] = []
+    for season_snapshots in by_season.values():
+        ordered = sorted(season_snapshots, key=lambda snapshot: snapshot.year)
+        if pair_mode == "same-season-yearly":
+            pairs.extend(zip(ordered[:-1], ordered[1:]))
+        elif pair_mode == "same-season-all-years":
+            pairs.extend(
+                (ordered[i], ordered[j])
+                for i in range(len(ordered))
+                for j in range(i + 1, len(ordered))
+            )
+    return pairs
 
 
 def read_reference(snapshot: Snapshot) -> tuple[np.ndarray, dict, np.ndarray]:
@@ -492,7 +533,7 @@ def save_binary_map(path: Path, mask: np.ndarray, title: str, max_size: int, col
     plt.close()
 
 
-def save_pair_trend(path: Path, summary: pd.DataFrame) -> None:
+def save_pair_trend(path: Path, summary: pd.DataFrame, title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     labels = summary["from_snapshot"] + " -> " + summary["to_snapshot"]
     fig, ax1 = plt.subplots(figsize=(12, 5))
@@ -502,7 +543,7 @@ def save_pair_trend(path: Path, summary: pd.DataFrame) -> None:
     ax2 = ax1.twinx()
     ax2.plot(labels, summary["crop_to_area_ha"], marker="s", color="#2ca02c", label="crop area")
     ax2.set_ylabel("Crop area (ha)")
-    ax1.set_title("Adjacent Snapshot Change Trend")
+    ax1.set_title(title)
     fig.tight_layout()
     plt.savefig(path, dpi=180)
     plt.close()
@@ -515,6 +556,7 @@ def main() -> None:
     LOGGER.info("Starting Dynamic World LULC change processor")
     LOGGER.info("Input directory: %s", args.input_dir)
     LOGGER.info("Output directory: %s", args.output_dir)
+    LOGGER.info("Pair mode: %s", args.pair_mode)
     if args.skip_figures:
         LOGGER.info("PNG figure export: disabled")
     elif args.preview_max_size <= 0:
@@ -587,13 +629,17 @@ def main() -> None:
                 time.perf_counter() - fig_start,
             )
 
+    pairs = build_pairs(snapshots, args.pair_mode)
+    if not pairs:
+        raise ValueError(f"No comparison pairs were built for pair mode '{args.pair_mode}'")
+
     pair_summaries = []
     transition_all = []
-    pair_total = max(0, len(snapshots) - 1)
-    for pair_index, (previous, current) in enumerate(zip(snapshots[:-1], snapshots[1:]), start=1):
+    pair_total = len(pairs)
+    for pair_index, (previous, current) in enumerate(pairs, start=1):
         pair_start = time.perf_counter()
         pair_label = f"{previous.label}_to_{current.label}"
-        LOGGER.info("Processing adjacent pair %d/%d: %s", pair_index, pair_total, pair_label)
+        LOGGER.info("Processing pair %d/%d: %s", pair_index, pair_total, pair_label)
         from_arr = arrays[previous.label]
         to_arr = arrays[current.label]
         valid = valids[previous.label] & valids[current.label]
@@ -675,28 +721,44 @@ def main() -> None:
     pair_summary_df = pd.DataFrame(pair_summaries)
     transitions_df = pd.DataFrame(transition_all)
     class_counts_df.to_csv(tables_dir / "snapshot_class_counts.csv", index=False)
+    pair_summary_df.to_csv(tables_dir / "pair_summary.csv", index=False)
+    transitions_df.to_csv(tables_dir / "transition_matrix_long.csv", index=False)
     pair_summary_df.to_csv(tables_dir / "adjacent_pair_summary.csv", index=False)
     transitions_df.to_csv(tables_dir / "adjacent_transition_matrix_long.csv", index=False)
     if not args.skip_figures:
-        save_pair_trend(figures_dir / "adjacent_change_trend.png", pair_summary_df)
+        save_pair_trend(
+            figures_dir / "change_trend.png",
+            pair_summary_df,
+            title=f"LULC Change Trend ({args.pair_mode})",
+        )
+        save_pair_trend(
+            figures_dir / "adjacent_change_trend.png",
+            pair_summary_df,
+            title=f"LULC Change Trend ({args.pair_mode})",
+        )
 
     manifest = {
         "input_dir": str(args.input_dir.resolve()),
         "output_dir": str(output_dir.resolve()),
+        "pair_mode": args.pair_mode,
         "snapshots": [
             {"label": s.label, "year": s.year, "season": s.season, "path": str(s.path.resolve())}
             for s in snapshots
         ],
+        "pairs": [
+            {"from_snapshot": previous.label, "to_snapshot": current.label}
+            for previous, current in pairs
+        ],
         "outputs": {
             "snapshot_class_counts": str((tables_dir / "snapshot_class_counts.csv").resolve()),
-            "adjacent_pair_summary": str((tables_dir / "adjacent_pair_summary.csv").resolve()),
-            "adjacent_transition_matrix_long": str((tables_dir / "adjacent_transition_matrix_long.csv").resolve()),
+            "pair_summary": str((tables_dir / "pair_summary.csv").resolve()),
+            "transition_matrix_long": str((tables_dir / "transition_matrix_long.csv").resolve()),
         },
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     LOGGER.info("Processed %d snapshots", len(snapshots))
-    LOGGER.info("Adjacent comparisons: %d", len(pair_summaries))
+    LOGGER.info("Comparisons: %d", len(pair_summaries))
     LOGGER.info("Output directory: %s", output_dir)
     LOGGER.info("Total elapsed time: %.1fs", time.perf_counter() - total_start)
 
