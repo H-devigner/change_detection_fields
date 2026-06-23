@@ -61,6 +61,20 @@ DW_COLORS = {
 CROP_CLASS = 4
 LOGGER = logging.getLogger("dw_lulc_change")
 
+CHANGED_MASK_COLORMAP = {
+    0: (245, 245, 238, 255),
+    1: (214, 39, 40, 255),
+    255: (0, 0, 0, 0),
+}
+
+CROP_STATE_COLORMAP = {
+    0: (245, 245, 238, 255),
+    1: (44, 160, 44, 255),
+    2: (214, 39, 40, 255),
+    3: (31, 119, 180, 255),
+    255: (0, 0, 0, 0),
+}
+
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -312,7 +326,13 @@ def pixel_area_ha(profile: dict) -> float:
     return float(area_m2 / 10_000.0)
 
 
-def write_raster(path: Path, array: np.ndarray, profile: dict, nodata: int) -> None:
+def write_raster(
+    path: Path,
+    array: np.ndarray,
+    profile: dict,
+    nodata: int,
+    colormap: dict[int, tuple[int, int, int, int]] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     out_profile = profile.copy()
     out_profile.update(
@@ -330,6 +350,8 @@ def write_raster(path: Path, array: np.ndarray, profile: dict, nodata: int) -> N
     LOGGER.info("Writing raster %s: shape=%s, dtype=%s, BigTIFF=YES", path.name, array.shape, array.dtype)
     with rasterio.open(path, "w", **out_profile) as dst:
         dst.write(array, 1)
+        if colormap is not None:
+            dst.write_colormap(1, colormap)
     LOGGER.info("Wrote raster %s in %.1fs", path.name, time.perf_counter() - write_start)
 
 
@@ -409,16 +431,44 @@ def rgba8(color: str, alpha: float = 1.0) -> tuple[int, int, int, int]:
     return tuple(int(round(channel * 255)) for channel in mcolors.to_rgba(color, alpha=alpha))
 
 
+def class_rgba(class_id: int) -> tuple[int, int, int, int]:
+    if class_id in DW_COLORS:
+        return rgba8(DW_COLORS[class_id])
+    hue = (class_id * 0.61803398875) % 1.0
+    red, green, blue = mcolors.hsv_to_rgb((hue, 0.65, 0.85))
+    return int(red * 255), int(green * 255), int(blue * 255), 255
+
+
+def downsample_binary_any(mask: np.ndarray, max_size: int) -> tuple[np.ndarray, int]:
+    step = preview_step(mask.shape, max_size)
+    if step == 1:
+        return mask, step
+    height = (mask.shape[0] // step) * step
+    width = (mask.shape[1] // step) * step
+    if height == 0 or width == 0:
+        return mask, 1
+    blocks = mask[:height, :width].reshape(height // step, step, width // step, step)
+    return blocks.any(axis=(1, 3)), step
+
+
 def save_class_map(path: Path, array: np.ndarray, valid: np.ndarray, title: str, max_size: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     step = preview_step(array.shape, max_size)
     preview_array = array[::step, ::step]
     preview_valid = valid[::step, ::step]
-    rgb = np.zeros((*preview_array.shape, 4), dtype=np.uint8)
-    for class_id, color in DW_COLORS.items():
-        mask = preview_valid & (preview_array == class_id)
-        rgb[mask] = rgba8(color)
-    rgb[~preview_valid] = (0, 0, 0, 0)
+    rgb = np.full((*preview_array.shape, 4), rgba8("#f5f5ee"), dtype=np.uint8)
+    preview_values = np.unique(preview_array[preview_valid])
+    for value in preview_values:
+        class_id = int(value)
+        rgb[preview_valid & (preview_array == value)] = class_rgba(class_id)
+    rgb[~preview_valid] = rgba8("#202020")
+    unknown_values = [int(value) for value in preview_values if int(value) not in DW_COLORS]
+    if unknown_values:
+        LOGGER.warning(
+            "%s has values outside Dynamic World 0-8 classes in the preview: %s",
+            title,
+            unknown_values[:20],
+        )
     plt.figure(figsize=(9, 9))
     plt.imshow(rgb, interpolation="nearest")
     plt.title(f"{title} (preview 1:{step})" if step > 1 else title)
@@ -430,9 +480,8 @@ def save_class_map(path: Path, array: np.ndarray, valid: np.ndarray, title: str,
 
 def save_binary_map(path: Path, mask: np.ndarray, title: str, max_size: int, color: str = "#d62728") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    step = preview_step(mask.shape, max_size)
-    preview_mask = mask[::step, ::step]
-    rgba = np.zeros((*preview_mask.shape, 4), dtype=np.uint8)
+    preview_mask, step = downsample_binary_any(mask, max_size)
+    rgba = np.full((*preview_mask.shape, 4), rgba8("#f5f5ee"), dtype=np.uint8)
     rgba[preview_mask] = rgba8(color)
     plt.figure(figsize=(9, 9))
     plt.imshow(rgba, interpolation="nearest")
@@ -564,8 +613,20 @@ def main() -> None:
 
         if not args.skip_rasters:
             raster_start = time.perf_counter()
-            write_raster(rasters_dir / f"{pair_label}_changed_mask.tif", changed_mask, ref_profile, nodata=255)
-            write_raster(rasters_dir / f"{pair_label}_crop_change_state.tif", crop_state, ref_profile, nodata=255)
+            write_raster(
+                rasters_dir / f"{pair_label}_changed_mask.tif",
+                changed_mask,
+                ref_profile,
+                nodata=255,
+                colormap=CHANGED_MASK_COLORMAP,
+            )
+            write_raster(
+                rasters_dir / f"{pair_label}_crop_change_state.tif",
+                crop_state,
+                ref_profile,
+                nodata=255,
+                colormap=CROP_STATE_COLORMAP,
+            )
             write_raster(rasters_dir / f"{pair_label}_transition_code.tif", transition_code, ref_profile, nodata=65535)
             LOGGER.info("Saved rasters for %s in %.1fs", pair_label, time.perf_counter() - raster_start)
         if not args.skip_figures:
@@ -591,7 +652,15 @@ def main() -> None:
                 color="#d62728",
             )
             LOGGER.info("Saved pair figures for %s in %.1fs", pair_label, time.perf_counter() - fig_start)
-        pair_summaries.append(pair_summary(from_arr, to_arr, valid, previous.label, current.label, px_ha))
+        summary = pair_summary(from_arr, to_arr, valid, previous.label, current.label, px_ha)
+        pair_summaries.append(summary)
+        LOGGER.info(
+            "Pair stats for %s: changed=%.4f%%, crop_gain_ha=%.2f, crop_loss_ha=%.2f",
+            pair_label,
+            summary["changed_pct"] * 100,
+            summary["crop_gain_area_ha"],
+            summary["crop_loss_area_ha"],
+        )
         transition_start = time.perf_counter()
         transition_all.extend(transition_rows(transition_code, valid, previous.label, current.label, px_ha))
         LOGGER.info(
