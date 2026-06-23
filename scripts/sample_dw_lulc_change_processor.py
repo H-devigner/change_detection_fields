@@ -106,6 +106,15 @@ def parse_args() -> argparse.Namespace:
         help="Filename stem template. Extension is discovered automatically. The default keeps the existing folder naming.",
     )
     parser.add_argument(
+        "--filename-templates",
+        default="",
+        help=(
+            "Optional semicolon-separated fallback stem templates tried in order, "
+            "for example 'kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}'. "
+            "Overrides --filename-template when set."
+        ),
+    )
+    parser.add_argument(
         "--pair-mode",
         choices=("same-season-yearly", "same-season-all-years", "adjacent", "all"),
         default="adjacent",
@@ -313,23 +322,42 @@ def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recurs
     )
 
 
+def parse_filename_templates(args: argparse.Namespace) -> list[str]:
+    if args.filename_templates:
+        return [template.strip() for template in args.filename_templates.split(";") if template.strip()]
+    return [args.filename_template]
+
+
 def discover_snapshots(args: argparse.Namespace) -> list[Snapshot]:
     years = parse_years(args.years)
     seasons = parse_csv_strings(args.seasons)
     extensions = parse_csv_strings(args.extensions)
+    filename_templates = parse_filename_templates(args)
     snapshots = []
     for year in years:
         for season in seasons:
-            stem = args.filename_template.format(year=year, season=season)
-            path = find_snapshot_file(
-                args.input_dir,
-                stem,
-                extensions,
-                recursive=args.recursive,
-                raster_glob=args.snapshot_raster_glob,
-            )
-            LOGGER.info("Discovered %s -> %s", f"{year}_{season}", path)
-            snapshots.append(Snapshot(year=year, season=season, label=f"{year}_{season}", path=path))
+            errors = []
+            for filename_template in filename_templates:
+                stem = filename_template.format(year=year, season=season)
+                try:
+                    path = find_snapshot_file(
+                        args.input_dir,
+                        stem,
+                        extensions,
+                        recursive=args.recursive,
+                        raster_glob=args.snapshot_raster_glob,
+                    )
+                except FileNotFoundError as exc:
+                    errors.append(str(exc))
+                    continue
+                LOGGER.info("Discovered %s using template '%s' -> %s", f"{year}_{season}", filename_template, path)
+                snapshots.append(Snapshot(year=year, season=season, label=f"{year}_{season}", path=path))
+                break
+            else:
+                raise FileNotFoundError(
+                    f"No raster found for {year}_{season} using templates: {filename_templates}. "
+                    f"Last errors: {' | '.join(errors[-3:])}"
+                )
     return snapshots
 
 

@@ -70,7 +70,7 @@ python scripts/sample_field_change_processor.py \
   --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
   --years 2020-2023 \
   --seasons february_april,june_august \
-  --filename-template "kursh_{year}_{season}__dw_lulc" \
+  --filename-templates "kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}" \
   --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
   --recursive \
   --pair-mode adjacent \
@@ -85,7 +85,7 @@ python scripts/sample_field_change_processor.py \
   --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
   --years 2020-2023 \
   --seasons february_april,june_august \
-  --filename-template "kursh_{year}_{season}__dw_lulc" \
+  --filename-templates "kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}" \
   --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
   --recursive \
   --dry-run
@@ -95,6 +95,14 @@ If the tile name is different, replace the glob with a more general selector,
 for example `--snapshot-raster-glob "02_clipped_mosaics/*.tif"`. If that matches
 more than one raster per snapshot, the script stops and asks for a stricter glob
 instead of guessing.
+
+Use `--filename-templates` when older runs have a different folder stem. Templates
+are tried from left to right. For example, this supports both
+`kursh_2021_february_april__dw_lulc` and `kursh_2020_february_april`:
+
+```bash
+--filename-templates "kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}"
+```
 
 Default comparisons with `--pair-mode adjacent`:
 
@@ -142,7 +150,7 @@ python scripts/sample_field_change_processor.py \
   --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
   --years 2020-2023 \
   --seasons february_april,june_august \
-  --filename-template "kursh_{year}_{season}__dw_lulc" \
+  --filename-templates "kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}" \
   --snapshot-raster-glob "02_clipped_mosaics/36RXT.tif" \
   --recursive \
   --pair-mode adjacent \
