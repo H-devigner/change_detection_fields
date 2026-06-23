@@ -7,6 +7,8 @@ data/raw/kursh_dw_lulc/*
 !data/raw/kursh_dw_lulc/.gitkeep
 data/raw/kursh_fields/*
 !data/raw/kursh_fields/.gitkeep
+data/raw/kursh_vectors/*
+!data/raw/kursh_vectors/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
 figures/*

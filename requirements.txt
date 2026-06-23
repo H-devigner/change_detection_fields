@@ -1,6 +1,10 @@
+geopandas>=0.14
 matplotlib>=3.8
 numpy>=1.26
 pandas>=2.0
+pillow>=10.0
+pyogrio>=0.7
 rasterio>=1.4
+shapely>=2.0
 setuptools>=68
 wheel

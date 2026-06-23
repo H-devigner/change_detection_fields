@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
+from PIL import Image, ImageDraw
 
 try:
     import rasterio
@@ -145,6 +146,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip PNG figure exports. Useful for fast diagnostic runs.",
     )
     parser.add_argument(
+        "--skip-gifs",
+        action="store_true",
+        help="Skip animated GIF timeline exports.",
+    )
+    parser.add_argument(
         "--skip-rasters",
         action="store_true",
         help="Skip GeoTIFF change raster exports. CSV tables are still written.",
@@ -154,6 +160,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=2048,
         help="Maximum width/height for PNG previews. Use 0 for full-resolution figures.",
+    )
+    parser.add_argument(
+        "--gif-duration-ms",
+        type=int,
+        default=900,
+        help="Duration of each GIF frame in milliseconds.",
     )
     parser.add_argument(
         "--quiet",
@@ -432,6 +444,10 @@ def field_transition_rows(from_field: np.ndarray, to_field: np.ndarray, valid: n
     return rows
 
 
+def safe_div(numerator: float, denominator: float) -> float:
+    return float(numerator / denominator) if denominator else 0.0
+
+
 def pair_summary(from_field: np.ndarray, to_field: np.ndarray, valid: np.ndarray, from_label: str, to_label: str, px_ha: float) -> dict:
     changed = valid & (from_field != to_field)
     field_gain = valid & (~from_field) & to_field
@@ -442,6 +458,39 @@ def pair_summary(from_field: np.ndarray, to_field: np.ndarray, valid: np.ndarray
     changed_pixels = int(changed.sum())
     from_field_pixels = int((valid & from_field).sum())
     to_field_pixels = int((valid & to_field).sum())
+    stable_field_pixels = int(stable_field.sum())
+    stable_non_field_pixels = int(stable_non_field.sum())
+    field_gain_pixels = int(field_gain.sum())
+    field_loss_pixels = int(field_loss.sum())
+    union_pixels = int((valid & (from_field | to_field)).sum())
+    gross_change_pixels = field_gain_pixels + field_loss_pixels
+    net_change_pixels = to_field_pixels - from_field_pixels
+    true_positive = stable_field_pixels
+    false_positive = field_gain_pixels
+    false_negative = field_loss_pixels
+    true_negative = stable_non_field_pixels
+    precision = safe_div(true_positive, true_positive + false_positive)
+    recall = safe_div(true_positive, true_positive + false_negative)
+    specificity = safe_div(true_negative, true_negative + false_positive)
+    negative_predictive_value = safe_div(true_negative, true_negative + false_negative)
+    accuracy = safe_div(true_positive + true_negative, valid_pixels)
+    balanced_accuracy = (recall + specificity) / 2.0
+    denominator = np.sqrt(
+        (true_positive + false_positive)
+        * (true_positive + false_negative)
+        * (true_negative + false_positive)
+        * (true_negative + false_negative)
+    )
+    mcc = safe_div(
+        (true_positive * true_negative) - (false_positive * false_negative),
+        denominator,
+    )
+    expected_accuracy = safe_div(
+        ((true_positive + false_positive) * (true_positive + false_negative))
+        + ((false_negative + true_negative) * (false_positive + true_negative)),
+        valid_pixels * valid_pixels,
+    )
+    kappa = safe_div(accuracy - expected_accuracy, 1.0 - expected_accuracy)
     return {
         "from_snapshot": from_label,
         "to_snapshot": to_label,
@@ -449,20 +498,42 @@ def pair_summary(from_field: np.ndarray, to_field: np.ndarray, valid: np.ndarray
         "valid_area_ha": float(valid_pixels * px_ha),
         "changed_pixels": changed_pixels,
         "changed_area_ha": float(changed_pixels * px_ha),
-        "changed_pct": float(changed_pixels / valid_pixels) if valid_pixels else 0.0,
+        "changed_pct": safe_div(changed_pixels, valid_pixels),
+        "gross_change_pixels": gross_change_pixels,
+        "gross_change_area_ha": float(gross_change_pixels * px_ha),
+        "gross_change_pct": safe_div(gross_change_pixels, valid_pixels),
         "from_field_pixels": from_field_pixels,
         "from_field_area_ha": float(from_field_pixels * px_ha),
         "to_field_pixels": to_field_pixels,
         "to_field_area_ha": float(to_field_pixels * px_ha),
-        "field_gain_pixels": int(field_gain.sum()),
-        "field_gain_area_ha": float(field_gain.sum() * px_ha),
-        "field_loss_pixels": int(field_loss.sum()),
-        "field_loss_area_ha": float(field_loss.sum() * px_ha),
-        "stable_field_pixels": int(stable_field.sum()),
-        "stable_field_area_ha": float(stable_field.sum() * px_ha),
-        "stable_non_field_pixels": int(stable_non_field.sum()),
-        "stable_non_field_area_ha": float(stable_non_field.sum() * px_ha),
-        "net_field_area_change_ha": float((to_field_pixels - from_field_pixels) * px_ha),
+        "field_gain_pixels": field_gain_pixels,
+        "field_gain_area_ha": float(field_gain_pixels * px_ha),
+        "field_gain_rate_vs_from": safe_div(field_gain_pixels, from_field_pixels),
+        "field_gain_rate_vs_to": safe_div(field_gain_pixels, to_field_pixels),
+        "field_loss_pixels": field_loss_pixels,
+        "field_loss_area_ha": float(field_loss_pixels * px_ha),
+        "field_loss_rate_vs_from": safe_div(field_loss_pixels, from_field_pixels),
+        "stable_field_pixels": stable_field_pixels,
+        "stable_field_area_ha": float(stable_field_pixels * px_ha),
+        "stable_non_field_pixels": stable_non_field_pixels,
+        "stable_non_field_area_ha": float(stable_non_field_pixels * px_ha),
+        "net_field_pixels": net_change_pixels,
+        "net_field_area_change_ha": float(net_change_pixels * px_ha),
+        "field_area_ratio_to_from": safe_div(to_field_pixels, from_field_pixels),
+        "field_iou": safe_div(stable_field_pixels, union_pixels),
+        "field_dice_f1": safe_div(2 * stable_field_pixels, from_field_pixels + to_field_pixels),
+        "field_precision_current_vs_previous": precision,
+        "field_recall_persistence": recall,
+        "field_specificity": specificity,
+        "field_negative_predictive_value": negative_predictive_value,
+        "field_accuracy": accuracy,
+        "field_balanced_accuracy": balanced_accuracy,
+        "field_mcc": mcc,
+        "field_cohen_kappa": kappa,
+        "field_jaccard_distance": 1.0 - safe_div(stable_field_pixels, union_pixels),
+        "field_churn_rate": safe_div(gross_change_pixels, union_pixels),
+        "field_retention_rate": safe_div(stable_field_pixels, from_field_pixels),
+        "field_expansion_rate": safe_div(field_gain_pixels, from_field_pixels),
     }
 
 
@@ -488,13 +559,44 @@ def downsample_binary_any(mask: np.ndarray, max_size: int) -> tuple[np.ndarray, 
     return blocks.any(axis=(1, 3)), step
 
 
-def save_field_map(path: Path, field: np.ndarray, valid: np.ndarray, title: str, max_size: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def field_preview_rgba(field: np.ndarray, valid: np.ndarray, max_size: int) -> tuple[np.ndarray, int]:
     preview_field, step = downsample_binary_any(field & valid, max_size)
     preview_valid, _ = downsample_binary_any(valid, max_size)
     rgb = np.full((*preview_field.shape, 4), rgba8("#f5f5ee"), dtype=np.uint8)
     rgb[preview_field] = rgba8("#2ca02c")
     rgb[~preview_valid] = rgba8("#202020")
+    return rgb, step
+
+
+def field_state_preview_rgba(from_field: np.ndarray, to_field: np.ndarray, valid: np.ndarray, max_size: int) -> tuple[np.ndarray, int]:
+    preview_valid, step = downsample_binary_any(valid, max_size)
+    stable_preview, _ = downsample_binary_any(valid & from_field & to_field, max_size)
+    gain_preview, _ = downsample_binary_any(valid & (~from_field) & to_field, max_size)
+    loss_preview, _ = downsample_binary_any(valid & from_field & (~to_field), max_size)
+    rgb = np.full((*preview_valid.shape, 4), rgba8("#f5f5ee"), dtype=np.uint8)
+    rgb[stable_preview] = rgba8("#2ca02c")
+    rgb[gain_preview] = rgba8("#1f77b4")
+    rgb[loss_preview] = rgba8("#d62728")
+    rgb[gain_preview & loss_preview] = rgba8("#7f3c8d")
+    rgb[~preview_valid] = rgba8("#202020")
+    return rgb, step
+
+
+def save_field_map(path: Path, field: np.ndarray, valid: np.ndarray, title: str, max_size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rgb, step = field_preview_rgba(field, valid, max_size)
+    plt.figure(figsize=(9, 9))
+    plt.imshow(rgb, interpolation="nearest")
+    plt.title(f"{title} (preview 1:{step})" if step > 1 else title)
+    plt.axis("off")
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def save_field_state_map(path: Path, from_field: np.ndarray, to_field: np.ndarray, valid: np.ndarray, title: str, max_size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rgb, step = field_state_preview_rgba(from_field, to_field, valid, max_size)
     plt.figure(figsize=(9, 9))
     plt.imshow(rgb, interpolation="nearest")
     plt.title(f"{title} (preview 1:{step})" if step > 1 else title)
@@ -518,6 +620,99 @@ def save_binary_map(path: Path, mask: np.ndarray, title: str, max_size: int, col
     plt.close()
 
 
+def compose_frame(
+    rgba: np.ndarray,
+    title: str,
+    legend: list[tuple[str, tuple[int, int, int, int]]],
+) -> Image.Image:
+    image = Image.fromarray(rgba, mode="RGBA")
+    width, height = image.size
+    title_height = 38
+    legend_height = 28 if legend else 0
+    canvas = Image.new("RGBA", (width, height + title_height + legend_height), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((10, 10), title, fill=(20, 20, 20, 255))
+    canvas.paste(image, (0, title_height))
+    x = 10
+    y = title_height + height + 7
+    for label, color in legend:
+        draw.rectangle((x, y, x + 14, y + 14), fill=color)
+        draw.text((x + 20, y - 1), label, fill=(20, 20, 20, 255))
+        x += 150
+    return canvas.convert("P", palette=Image.Palette.ADAPTIVE)
+
+
+def save_gif(frames: list[Image.Image], path: Path, duration_ms: int) -> None:
+    if not frames:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(
+        path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=False,
+    )
+
+
+def save_snapshot_timeline_gif(
+    path: Path,
+    frame_dir: Path,
+    snapshots: list[Snapshot],
+    fields: dict[str, np.ndarray],
+    valids: dict[str, np.ndarray],
+    max_size: int,
+    duration_ms: int,
+) -> None:
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    legend = [
+        ("field", rgba8("#2ca02c")),
+        ("non-field", rgba8("#f5f5ee")),
+        ("nodata", rgba8("#202020")),
+    ]
+    frames = []
+    for index, snapshot in enumerate(snapshots, start=1):
+        rgba, step = field_preview_rgba(fields[snapshot.label], valids[snapshot.label], max_size)
+        frame = compose_frame(rgba, f"{snapshot.label} field extent (preview 1:{step})", legend)
+        frame.save(frame_dir / f"{index:03d}_{snapshot.label}.png")
+        frames.append(frame)
+    save_gif(frames, path, duration_ms)
+
+
+def save_change_timeline_gif(
+    path: Path,
+    frame_dir: Path,
+    pairs: list[tuple[Snapshot, Snapshot]],
+    fields: dict[str, np.ndarray],
+    valids: dict[str, np.ndarray],
+    max_size: int,
+    duration_ms: int,
+) -> None:
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    legend = [
+        ("stable", rgba8("#2ca02c")),
+        ("gain", rgba8("#1f77b4")),
+        ("loss", rgba8("#d62728")),
+        ("mixed", rgba8("#7f3c8d")),
+        ("non-field", rgba8("#f5f5ee")),
+    ]
+    frames = []
+    for index, (previous, current) in enumerate(pairs, start=1):
+        valid = valids[previous.label] & valids[current.label]
+        rgba, step = field_state_preview_rgba(
+            fields[previous.label],
+            fields[current.label],
+            valid,
+            max_size,
+        )
+        pair_label = f"{previous.label}_to_{current.label}"
+        frame = compose_frame(rgba, f"{previous.label} -> {current.label} change state (preview 1:{step})", legend)
+        frame.save(frame_dir / f"{index:03d}_{pair_label}.png")
+        frames.append(frame)
+    save_gif(frames, path, duration_ms)
+
+
 def save_pair_trend(path: Path, summary: pd.DataFrame, title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     labels = summary["from_snapshot"] + " -> " + summary["to_snapshot"]
@@ -529,6 +724,56 @@ def save_pair_trend(path: Path, summary: pd.DataFrame, title: str) -> None:
     ax2.plot(labels, summary["to_field_area_ha"], marker="s", color="#2ca02c", label="field area")
     ax2.set_ylabel("Field area (ha)")
     ax1.set_title(title)
+    fig.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def save_metrics_dashboard(path: Path, snapshot_summary: pd.DataFrame, pair_summary_df: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pair_labels = pair_summary_df["from_snapshot"] + " -> " + pair_summary_df["to_snapshot"]
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+    axes[0, 0].plot(snapshot_summary["snapshot"], snapshot_summary["field_area_ha"], marker="o", color="#2ca02c")
+    axes[0, 0].set_title("Field Area Timeline")
+    axes[0, 0].set_ylabel("Area (ha)")
+    axes[0, 0].tick_params(axis="x", rotation=45)
+
+    axes[0, 1].plot(pair_labels, pair_summary_df["field_iou"], marker="o", label="IoU", color="#1f77b4")
+    axes[0, 1].plot(pair_labels, pair_summary_df["field_dice_f1"], marker="s", label="Dice/F1", color="#ff7f0e")
+    axes[0, 1].plot(pair_labels, pair_summary_df["field_mcc"], marker="^", label="MCC", color="#9467bd")
+    axes[0, 1].set_title("Agreement Metrics")
+    axes[0, 1].set_ylim(-1.05, 1.05)
+    axes[0, 1].legend()
+    axes[0, 1].tick_params(axis="x", rotation=45)
+
+    x_positions = np.arange(len(pair_labels))
+    width = 0.42
+    axes[1, 0].bar(
+        x_positions - width / 2,
+        pair_summary_df["field_gain_area_ha"],
+        width,
+        label="gain",
+        color="#1f77b4",
+    )
+    axes[1, 0].bar(
+        x_positions + width / 2,
+        pair_summary_df["field_loss_area_ha"],
+        width,
+        label="loss",
+        color="#d62728",
+    )
+    axes[1, 0].set_title("Field Gain / Loss")
+    axes[1, 0].set_ylabel("Area (ha)")
+    axes[1, 0].set_xticks(x_positions, pair_labels, rotation=45, ha="right")
+    axes[1, 0].legend()
+
+    axes[1, 1].bar(pair_labels, pair_summary_df["net_field_area_change_ha"], color="#2ca02c")
+    axes[1, 1].axhline(0, color="#202020", linewidth=0.8)
+    axes[1, 1].set_title("Net Field Area Change")
+    axes[1, 1].set_ylabel("Area (ha)")
+    axes[1, 1].tick_params(axis="x", rotation=45)
+
     fig.tight_layout()
     plt.savefig(path, dpi=180)
     plt.close()
@@ -676,6 +921,14 @@ def main() -> None:
             LOGGER.info("Saved rasters for %s in %.1fs", pair_label, time.perf_counter() - raster_start)
         if not args.skip_figures:
             fig_start = time.perf_counter()
+            save_field_state_map(
+                figures_dir / "pairs" / f"{pair_label}_field_change_state.png",
+                from_field,
+                to_field,
+                valid,
+                f"Field change state: {pair_label}",
+                max_size=args.preview_max_size,
+            )
             save_binary_map(
                 figures_dir / "pairs" / f"{pair_label}_changed.png",
                 changed,
@@ -736,6 +989,27 @@ def main() -> None:
             pair_summary_df,
             title=f"Field Change Trend ({args.pair_mode})",
         )
+        save_metrics_dashboard(figures_dir / "field_change_metrics_dashboard.png", snapshot_df, pair_summary_df)
+        if not args.skip_gifs:
+            timeline_dir = figures_dir / "timelines"
+            save_snapshot_timeline_gif(
+                timeline_dir / "field_extent_timeline.gif",
+                timeline_dir / "frames" / "field_extent",
+                snapshots,
+                fields,
+                valids,
+                max_size=args.preview_max_size,
+                duration_ms=args.gif_duration_ms,
+            )
+            save_change_timeline_gif(
+                timeline_dir / "field_change_timeline.gif",
+                timeline_dir / "frames" / "field_change",
+                pairs,
+                fields,
+                valids,
+                max_size=args.preview_max_size,
+                duration_ms=args.gif_duration_ms,
+            )
 
     manifest = {
         "input_dir": str(args.input_dir.resolve()),
@@ -753,6 +1027,9 @@ def main() -> None:
             "snapshot_field_summary": str((tables_dir / "snapshot_field_summary.csv").resolve()),
             "pair_summary": str((tables_dir / "pair_summary.csv").resolve()),
             "field_transition_matrix_long": str((tables_dir / "field_transition_matrix_long.csv").resolve()),
+            "metrics_dashboard": str((figures_dir / "field_change_metrics_dashboard.png").resolve()),
+            "field_extent_timeline_gif": str((figures_dir / "timelines" / "field_extent_timeline.gif").resolve()),
+            "field_change_timeline_gif": str((figures_dir / "timelines" / "field_change_timeline.gif").resolve()),
         },
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

@@ -125,6 +125,30 @@ Use `--debug` for extra detail or `--quiet` to show only warnings/errors.
 The older `scripts/sample_dw_lulc_change_processor.py` entry point is still kept
 for compatibility, but the field-specific wrapper above is preferred.
 
+## Raster Metrics
+
+`tables/pair_summary.csv` includes monitoring metrics commonly used for binary
+segmentation and change detection:
+
+```text
+field_iou
+field_dice_f1
+field_precision_current_vs_previous
+field_recall_persistence
+field_specificity
+field_balanced_accuracy
+field_mcc
+field_cohen_kappa
+field_churn_rate
+field_retention_rate
+field_expansion_rate
+gross_change_area_ha
+net_field_area_change_ha
+```
+
+For these agreement metrics, the earlier snapshot is treated as the reference
+state and the later snapshot is treated as the monitored state.
+
 ## Outputs
 
 ```text
@@ -140,7 +164,54 @@ data/processed/kursh_2021_2023_field_sample/
     *_field_change_state.tif
     *_field_transition_code.tif
   figures/
+    field_change_metrics_dashboard.png
+    change_trend.png
     snapshots/*.png
     pairs/*.png
-    change_trend.png
+    timelines/field_extent_timeline.gif
+    timelines/field_change_timeline.gif
+```
+
+## Vector Polygon Tracking
+
+Use the vector tracker when you have field delineation polygons and need object
+identity monitoring, split candidates, and merge candidates. This is the right
+workflow for following a field through time.
+
+```bash
+python scripts/vector_field_change_tracker.py \
+  --input-dir data/raw/kursh_vectors \
+  --years 2021,2022,2023 \
+  --seasons february_april,june_august \
+  --filename-template "kursh_{year}_{season}__fields" \
+  --pair-mode adjacent \
+  --input-crs EPSG:4326 \
+  --metric-crs EPSG:32636 \
+  --output-dir data/processed/kursh_2021_2023_vector_field_change
+```
+
+Vector outputs:
+
+```text
+tables/vector_snapshot_summary.csv
+tables/vector_pair_summary.csv
+tables/vector_overlap_matrix.csv
+tables/vector_field_matches.csv
+tables/vector_split_merge_events.csv
+figures/vector_change_metrics_dashboard.png
+figures/timelines/vector_fields_timeline.gif
+figures/timelines/vector_pair_overlay_timeline.gif
+```
+
+Main vector metrics:
+
+```text
+matched_iou_mean
+matched_iou_median
+matched_iou_area_weighted
+new_count
+disappeared_count
+split_candidate_count
+merge_candidate_count
+net_area_change_ha
 ```
