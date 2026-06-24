@@ -57,12 +57,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--extensions", default=".geojson,.gpkg,.shp,.json")
     parser.add_argument(
+        "--tile-id",
+        default="",
+        help=(
+            "Optional tile ID such as 36RXT. When set without --snapshot-vector-glob, "
+            "the tracker selects '07_exports/{tile}/{tile}/{tile}.geojson' inside "
+            "each snapshot directory. If --snapshot-vector-glob contains '{tile}', "
+            "the placeholder is replaced with this value."
+        ),
+    )
+    parser.add_argument(
         "--snapshot-vector-glob",
         default="",
         help=(
             "Optional relative glob used inside each snapshot directory, for example "
-            "'*.geojson' or 'outputs/*.geojson'. Use this when run folders contain "
-            "multiple vector products."
+            "'*.geojson', 'outputs/*.geojson', or "
+            "'07_exports/{tile}/{tile}/{tile}.geojson'. Use this when run folders "
+            "contain multiple vector products."
         ),
     )
     parser.add_argument(
@@ -140,6 +151,18 @@ def parse_semicolon_strings(raw: str) -> list[str]:
     return [value.strip() for value in raw.replace("\n", ";").split(";") if value.strip()]
 
 
+def resolve_vector_glob(args: argparse.Namespace) -> str:
+    tile_id = args.tile_id.strip()
+    vector_glob = args.snapshot_vector_glob.strip()
+    if vector_glob and tile_id:
+        return vector_glob.format(tile=tile_id)
+    if vector_glob:
+        return vector_glob
+    if tile_id:
+        return f"07_exports/{tile_id}/{tile_id}/{tile_id}.geojson"
+    return ""
+
+
 def pick_vector_from_directory(directory: Path, extensions: list[str], vector_glob: str = "") -> Path | None:
     if vector_glob:
         matches = sorted(
@@ -197,6 +220,7 @@ def discover_snapshots_from_paths(args: argparse.Namespace) -> list[VectorSnapsh
         raise ValueError("--snapshot-paths was provided but did not contain any paths")
 
     extensions = parse_csv_strings(args.extensions)
+    vector_glob = resolve_vector_glob(args)
     explicit_entries = [entry for entry in entries if len(entry.split(":", 2)) == 3]
     if explicit_entries:
         if len(explicit_entries) != len(entries):
@@ -209,7 +233,7 @@ def discover_snapshots_from_paths(args: argparse.Namespace) -> list[VectorSnapsh
             year_raw, season, path_raw = entry.split(":", 2)
             year = int(year_raw.strip())
             season = season.strip()
-            path = normalize_snapshot_path(path_raw.strip(), extensions, args.snapshot_vector_glob)
+            path = normalize_snapshot_path(path_raw.strip(), extensions, vector_glob)
             label = f"{year}_{season}"
             LOGGER.info("Discovered %s from explicit path -> %s", label, path)
             snapshots.append(VectorSnapshot(year=year, season=season, label=label, path=path))
@@ -230,7 +254,7 @@ def discover_snapshots_from_paths(args: argparse.Namespace) -> list[VectorSnapsh
     path_index = 0
     for year in years:
         for season in seasons:
-            path = normalize_snapshot_path(entries[path_index], extensions, args.snapshot_vector_glob)
+            path = normalize_snapshot_path(entries[path_index], extensions, vector_glob)
             label = f"{year}_{season}"
             LOGGER.info("Discovered %s from ordered path -> %s", label, path)
             snapshots.append(VectorSnapshot(year=year, season=season, label=label, path=path))
@@ -283,6 +307,7 @@ def discover_snapshots(args: argparse.Namespace) -> list[VectorSnapshot]:
     seasons = parse_csv_strings(args.seasons)
     extensions = parse_csv_strings(args.extensions)
     filename_templates = parse_filename_templates(args)
+    vector_glob = resolve_vector_glob(args)
     snapshots = []
     for year in years:
         for season in seasons:
@@ -295,7 +320,7 @@ def discover_snapshots(args: argparse.Namespace) -> list[VectorSnapshot]:
                         stem,
                         extensions,
                         args.recursive,
-                        args.snapshot_vector_glob,
+                        vector_glob,
                     )
                 except FileNotFoundError as exc:
                     errors.append(str(exc))
@@ -541,6 +566,9 @@ def main() -> None:
     else:
         LOGGER.info("Input directory: %s", args.input_dir)
     LOGGER.info("Output directory: %s", args.output_dir)
+    vector_glob = resolve_vector_glob(args)
+    if vector_glob:
+        LOGGER.info("Vector selector: %s", vector_glob)
     snapshots = discover_snapshots(args)
     if args.dry_run:
         LOGGER.info("Dry run complete. Selected snapshots:")

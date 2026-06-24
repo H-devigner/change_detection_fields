@@ -257,8 +257,8 @@ python scripts/vector_field_change_tracker.py \
   --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
   --years 2020-2023 \
   --seasons february_april,june_august \
-  --filename-templates "kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}" \
-  --snapshot-vector-glob "*.geojson" \
+  --filename-templates "kursh_{year}_images_season_{season}__dw_lulc;kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}" \
+  --tile-id 36RXT \
   --recursive \
   --dry-run
 ```
@@ -269,8 +269,20 @@ If you want to pass exact GeoJSON files or run folders directly, use
 ```bash
 python scripts/vector_field_change_tracker.py \
   --snapshot-paths "2020:february_april:/path/kursh_2020_february_april;2020:june_august:/path/kursh_2020_june_august" \
-  --snapshot-vector-glob "*.geojson" \
+  --tile-id 36RXT \
   --dry-run
+```
+
+For the current export layout, `--tile-id 36RXT` resolves to:
+
+```text
+07_exports/36RXT/36RXT/36RXT.geojson
+```
+
+You can override that with:
+
+```bash
+--snapshot-vector-glob "07_exports/{tile}/{tile}/{tile}.geojson" --tile-id 36RXT
 ```
 
 Vector outputs:
