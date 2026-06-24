@@ -80,9 +80,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input-dir",
-        required=True,
         type=Path,
-        help="Directory containing agricultural field raster snapshots.",
+        help=(
+            "Directory containing agricultural field raster snapshots. "
+            "Optional when --snapshot-paths is provided."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -143,6 +145,16 @@ def parse_args() -> argparse.Namespace:
             "Optional relative glob used inside each snapshot directory, for example "
             "'02_clipped_mosaics/36RXT.tif' or '02_clipped_mosaics/*.tif'. "
             "Use this when run folders contain multiple raster products."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-paths",
+        default="",
+        help=(
+            "Optional semicolon-separated exact raster paths. Bare paths are assigned "
+            "in --years/--seasons order. Entries may also be explicit as "
+            "'year:season:/path/to/raster.tif'. When set, discovery from --input-dir "
+            "and filename templates is skipped."
         ),
     )
     parser.add_argument(
@@ -243,6 +255,65 @@ def parse_csv_strings(raw: str) -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
+def parse_semicolon_strings(raw: str) -> list[str]:
+    return [x.strip() for x in raw.replace("\n", ";").split(";") if x.strip()]
+
+
+def normalize_snapshot_path(raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Snapshot path not found: {path}")
+    if not path.is_file():
+        raise FileNotFoundError(f"Snapshot path is not a file: {path}")
+    return path
+
+
+def discover_snapshots_from_paths(args: argparse.Namespace) -> list[Snapshot]:
+    entries = parse_semicolon_strings(args.snapshot_paths)
+    if not entries:
+        raise ValueError("--snapshot-paths was provided but did not contain any paths")
+
+    explicit_entries = [entry for entry in entries if len(entry.split(":", 2)) == 3]
+    if explicit_entries:
+        if len(explicit_entries) != len(entries):
+            raise ValueError(
+                "--snapshot-paths must use either all bare paths or all explicit "
+                "'year:season:path' entries; do not mix both forms."
+            )
+        snapshots = []
+        for entry in entries:
+            year_raw, season, path_raw = entry.split(":", 2)
+            year = int(year_raw.strip())
+            season = season.strip()
+            path = normalize_snapshot_path(path_raw.strip())
+            label = f"{year}_{season}"
+            LOGGER.info("Discovered %s from explicit path -> %s", label, path)
+            snapshots.append(Snapshot(year=year, season=season, label=label, path=path))
+        return snapshots
+
+    years = parse_years(args.years)
+    seasons = parse_csv_strings(args.seasons)
+    expected = len(years) * len(seasons)
+    if len(entries) != expected:
+        raise ValueError(
+            f"--snapshot-paths provided {len(entries)} bare paths, but --years/--seasons "
+            f"define {expected} snapshots ({len(years)} years x {len(seasons)} seasons). "
+            "Either pass the exact number of ordered paths or use explicit "
+            "'year:season:path' entries."
+        )
+
+    snapshots = []
+    path_index = 0
+    for year in years:
+        for season in seasons:
+            path = normalize_snapshot_path(entries[path_index])
+            label = f"{year}_{season}"
+            LOGGER.info("Discovered %s from ordered path -> %s", label, path)
+            snapshots.append(Snapshot(year=year, season=season, label=label, path=path))
+            path_index += 1
+    return snapshots
+
+
 def candidate_listing(input_dir: Path, stem: str) -> str:
     if not input_dir.exists():
         return "input directory does not exist"
@@ -329,6 +400,11 @@ def parse_filename_templates(args: argparse.Namespace) -> list[str]:
 
 
 def discover_snapshots(args: argparse.Namespace) -> list[Snapshot]:
+    if args.snapshot_paths:
+        return discover_snapshots_from_paths(args)
+    if args.input_dir is None:
+        raise ValueError("Either --input-dir or --snapshot-paths is required.")
+
     years = parse_years(args.years)
     seasons = parse_csv_strings(args.seasons)
     extensions = parse_csv_strings(args.extensions)
@@ -866,7 +942,10 @@ def main() -> None:
     args = parse_args()
     setup_logging(args)
     LOGGER.info("Starting agricultural field raster change processor")
-    LOGGER.info("Input directory: %s", args.input_dir)
+    if args.snapshot_paths:
+        LOGGER.info("Input mode: explicit snapshot paths")
+    else:
+        LOGGER.info("Input directory: %s", args.input_dir)
     LOGGER.info("Output directory: %s", args.output_dir)
     LOGGER.info("Pair mode: %s", args.pair_mode)
     if args.skip_figures:

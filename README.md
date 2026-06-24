@@ -91,6 +91,26 @@ python scripts/sample_field_change_processor.py \
   --dry-run
 ```
 
+If you already know the exact raster paths, skip template discovery with
+`--snapshot-paths`. Bare paths are assigned in `--years` and `--seasons` order:
+
+```bash
+python scripts/sample_field_change_processor.py \
+  --years 2020-2021 \
+  --seasons february_april,june_august \
+  --snapshot-paths "/path/2020_february_april.tif;/path/2020_june_august.tif;/path/2021_february_april.tif;/path/2021_june_august.tif" \
+  --dry-run
+```
+
+For long or irregular sequences, make each path self-labeled:
+
+```bash
+python scripts/sample_field_change_processor.py \
+  --snapshot-paths "2020:february_april:/path/2020_february_april.tif;2020:june_august:/path/2020_june_august.tif;2023:february_april:/path/2023_february_april.tif" \
+  --pair-mode adjacent \
+  --output-dir data/processed/custom_field_change
+```
+
 If the tile name is different, replace the glob with a more general selector,
 for example `--snapshot-raster-glob "02_clipped_mosaics/*.tif"`. If that matches
 more than one raster per snapshot, the script stops and asks for a stricter glob
@@ -125,11 +145,12 @@ same-season-all-years all cross-year combinations within each season
 all                   every from-to pair in snapshot order
 ```
 
-`--years` accepts either comma lists or inclusive ranges:
+`--years` accepts any number of years as comma lists, inclusive ranges, or both:
 
 ```text
 --years 2020,2021,2022,2023
 --years 2020-2023
+--years 2020-2022,2025,2027-2029
 ```
 
 GeoTIFF outputs are written as tiled BigTIFF files, so large rasters above the classic
