@@ -250,6 +250,29 @@ python scripts/vector_field_change_tracker.py \
   --output-dir data/processed/kursh_2020_2023_vector_field_change
 ```
 
+If the GeoJSONs live inside run folders, point the tracker at the parent folder:
+
+```bash
+python scripts/vector_field_change_tracker.py \
+  --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
+  --years 2020-2023 \
+  --seasons february_april,june_august \
+  --filename-templates "kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}" \
+  --snapshot-vector-glob "*.geojson" \
+  --recursive \
+  --dry-run
+```
+
+If you want to pass exact GeoJSON files or run folders directly, use
+`--snapshot-paths`. For two snapshots, make each entry self-labeled:
+
+```bash
+python scripts/vector_field_change_tracker.py \
+  --snapshot-paths "2020:february_april:/path/kursh_2020_february_april;2020:june_august:/path/kursh_2020_june_august" \
+  --snapshot-vector-glob "*.geojson" \
+  --dry-run
+```
+
 Vector outputs:
 
 ```text

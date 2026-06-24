@@ -33,7 +33,11 @@ class VectorSnapshot:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Track field polygon changes using overlap and IoU metrics.")
-    parser.add_argument("--input-dir", required=True, type=Path, help="Directory containing vector field snapshots.")
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        help="Directory containing vector field snapshots. Optional when --snapshot-paths is provided.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("data/processed/vector_field_change"))
     parser.add_argument(
         "--years",
@@ -42,7 +46,34 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seasons", default="february_april,june_august")
     parser.add_argument("--filename-template", default="kursh_{year}_{season}__fields")
+    parser.add_argument(
+        "--filename-templates",
+        default="",
+        help=(
+            "Optional semicolon-separated fallback stem templates tried in order, "
+            "for example 'kursh_{year}_{season}__fields;kursh_{year}_{season}'. "
+            "Overrides --filename-template when set."
+        ),
+    )
     parser.add_argument("--extensions", default=".geojson,.gpkg,.shp,.json")
+    parser.add_argument(
+        "--snapshot-vector-glob",
+        default="",
+        help=(
+            "Optional relative glob used inside each snapshot directory, for example "
+            "'*.geojson' or 'outputs/*.geojson'. Use this when run folders contain "
+            "multiple vector products."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-paths",
+        default="",
+        help=(
+            "Optional semicolon-separated exact vector files or snapshot directories. "
+            "Bare entries are assigned in --years/--seasons order. Entries may also "
+            "be explicit as 'year:season:/path/to/file_or_directory'."
+        ),
+    )
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument(
         "--pair-mode",
@@ -61,6 +92,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-figures", action="store_true")
     parser.add_argument("--skip-gifs", action="store_true")
     parser.add_argument("--gif-duration-ms", type=int, default=900)
+    parser.add_argument("--dry-run", action="store_true", help="Only discover snapshots; do not read vectors.")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
@@ -104,17 +136,130 @@ def parse_csv_strings(raw: str) -> list[str]:
     return [value.strip() for value in raw.split(",") if value.strip()]
 
 
-def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recursive: bool) -> Path:
+def parse_semicolon_strings(raw: str) -> list[str]:
+    return [value.strip() for value in raw.replace("\n", ";").split(";") if value.strip()]
+
+
+def pick_vector_from_directory(directory: Path, extensions: list[str], vector_glob: str = "") -> Path | None:
+    if vector_glob:
+        matches = sorted(
+            path
+            for path in directory.glob(vector_glob)
+            if path.is_file() and not path.name.startswith(".")
+        )
+        if not matches:
+            return None
+        if len(matches) > 1:
+            candidates = ", ".join(str(path.relative_to(directory)) for path in matches[:20])
+            raise ValueError(
+                f"Snapshot directory {directory} has multiple vectors matching "
+                f"--snapshot-vector-glob '{vector_glob}': {candidates}. "
+                "Use a more specific glob."
+            )
+        return matches[0]
+
+    matches: list[Path] = []
+    for ext in extensions:
+        matches.extend(directory.rglob(f"*{ext}"))
+    matches = sorted(path for path in matches if path.is_file() and not path.name.startswith("."))
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    preferred = [
+        path
+        for path in matches
+        if any(token in path.name.lower() for token in ("field", "delineat", "polygon", "geojson"))
+    ]
+    ranked = sorted(preferred or matches, key=lambda path: (len(path.parts), path.name))
+    candidates = ", ".join(str(path.relative_to(directory)) for path in ranked[:20])
+    raise ValueError(
+        f"Snapshot directory {directory} contains multiple candidate vectors: {candidates}. "
+        "Pass --snapshot-vector-glob to select the intended file."
+    )
+
+
+def normalize_snapshot_path(raw_path: str, extensions: list[str], vector_glob: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if path.is_file():
+        return path
+    if path.is_dir():
+        vector = pick_vector_from_directory(path, extensions, vector_glob)
+        if vector is not None:
+            return vector
+        raise FileNotFoundError(f"No vector file found inside snapshot directory: {path}")
+    raise FileNotFoundError(f"Snapshot path not found: {path}")
+
+
+def discover_snapshots_from_paths(args: argparse.Namespace) -> list[VectorSnapshot]:
+    entries = parse_semicolon_strings(args.snapshot_paths)
+    if not entries:
+        raise ValueError("--snapshot-paths was provided but did not contain any paths")
+
+    extensions = parse_csv_strings(args.extensions)
+    explicit_entries = [entry for entry in entries if len(entry.split(":", 2)) == 3]
+    if explicit_entries:
+        if len(explicit_entries) != len(entries):
+            raise ValueError(
+                "--snapshot-paths must use either all bare paths or all explicit "
+                "'year:season:path' entries; do not mix both forms."
+            )
+        snapshots = []
+        for entry in entries:
+            year_raw, season, path_raw = entry.split(":", 2)
+            year = int(year_raw.strip())
+            season = season.strip()
+            path = normalize_snapshot_path(path_raw.strip(), extensions, args.snapshot_vector_glob)
+            label = f"{year}_{season}"
+            LOGGER.info("Discovered %s from explicit path -> %s", label, path)
+            snapshots.append(VectorSnapshot(year=year, season=season, label=label, path=path))
+        return snapshots
+
+    years = parse_years(args.years)
+    seasons = parse_csv_strings(args.seasons)
+    expected = len(years) * len(seasons)
+    if len(entries) != expected:
+        raise ValueError(
+            f"--snapshot-paths provided {len(entries)} bare paths, but --years/--seasons "
+            f"define {expected} snapshots ({len(years)} years x {len(seasons)} seasons). "
+            "Either pass the exact number of ordered paths or use explicit "
+            "'year:season:path' entries."
+        )
+
+    snapshots = []
+    path_index = 0
+    for year in years:
+        for season in seasons:
+            path = normalize_snapshot_path(entries[path_index], extensions, args.snapshot_vector_glob)
+            label = f"{year}_{season}"
+            LOGGER.info("Discovered %s from ordered path -> %s", label, path)
+            snapshots.append(VectorSnapshot(year=year, season=season, label=label, path=path))
+            path_index += 1
+    return snapshots
+
+
+def parse_filename_templates(args: argparse.Namespace) -> list[str]:
+    if args.filename_templates:
+        return [template.strip() for template in args.filename_templates.split(";") if template.strip()]
+    return [args.filename_template]
+
+
+def find_snapshot_file(
+    input_dir: Path,
+    stem: str,
+    extensions: list[str],
+    recursive: bool,
+    vector_glob: str,
+) -> Path:
     for ext in extensions:
         direct = input_dir / f"{stem}{ext}"
         if direct.exists():
             return direct
     directory = input_dir / stem
     if directory.is_dir():
-        for ext in extensions:
-            matches = sorted(directory.rglob(f"*{ext}"))
-            if matches:
-                return matches[0]
+        vector = pick_vector_from_directory(directory, extensions, vector_glob)
+        if vector is not None:
+            return vector
     if recursive:
         for ext in extensions:
             matches = sorted(input_dir.rglob(f"{stem}{ext}"))
@@ -122,24 +267,47 @@ def find_snapshot_file(input_dir: Path, stem: str, extensions: list[str], recurs
                 return matches[0]
         directories = sorted(path for path in input_dir.rglob(stem) if path.is_dir())
         for directory in directories:
-            for ext in extensions:
-                matches = sorted(directory.rglob(f"*{ext}"))
-                if matches:
-                    return matches[0]
+            vector = pick_vector_from_directory(directory, extensions, vector_glob)
+            if vector is not None:
+                return vector
     raise FileNotFoundError(f"No vector snapshot found for stem '{stem}' in {input_dir}")
 
 
 def discover_snapshots(args: argparse.Namespace) -> list[VectorSnapshot]:
+    if args.snapshot_paths:
+        return discover_snapshots_from_paths(args)
+    if args.input_dir is None:
+        raise ValueError("Either --input-dir or --snapshot-paths is required.")
+
     years = parse_years(args.years)
     seasons = parse_csv_strings(args.seasons)
     extensions = parse_csv_strings(args.extensions)
+    filename_templates = parse_filename_templates(args)
     snapshots = []
     for year in years:
         for season in seasons:
-            stem = args.filename_template.format(year=year, season=season)
-            path = find_snapshot_file(args.input_dir, stem, extensions, args.recursive)
-            LOGGER.info("Discovered %s -> %s", f"{year}_{season}", path)
-            snapshots.append(VectorSnapshot(year=year, season=season, label=f"{year}_{season}", path=path))
+            errors = []
+            for filename_template in filename_templates:
+                stem = filename_template.format(year=year, season=season)
+                try:
+                    path = find_snapshot_file(
+                        args.input_dir,
+                        stem,
+                        extensions,
+                        args.recursive,
+                        args.snapshot_vector_glob,
+                    )
+                except FileNotFoundError as exc:
+                    errors.append(str(exc))
+                    continue
+                LOGGER.info("Discovered %s using template '%s' -> %s", f"{year}_{season}", filename_template, path)
+                snapshots.append(VectorSnapshot(year=year, season=season, label=f"{year}_{season}", path=path))
+                break
+            else:
+                raise FileNotFoundError(
+                    f"No vector snapshot found for {year}_{season} using templates: {filename_templates}. "
+                    f"Last errors: {' | '.join(errors[-3:])}"
+                )
     return snapshots
 
 
@@ -368,9 +536,18 @@ def main() -> None:
     args = parse_args()
     setup_logging(args)
     LOGGER.info("Starting vector field change tracker")
-    LOGGER.info("Input directory: %s", args.input_dir)
+    if args.snapshot_paths:
+        LOGGER.info("Input mode: explicit snapshot paths")
+    else:
+        LOGGER.info("Input directory: %s", args.input_dir)
     LOGGER.info("Output directory: %s", args.output_dir)
     snapshots = discover_snapshots(args)
+    if args.dry_run:
+        LOGGER.info("Dry run complete. Selected snapshots:")
+        for snapshot in snapshots:
+            LOGGER.info("%s -> %s", snapshot.label, snapshot.path)
+        return
+
     pairs = build_pairs(snapshots, args.pair_mode)
     if not pairs:
         raise ValueError(f"No comparison pairs were built for pair mode '{args.pair_mode}'")
