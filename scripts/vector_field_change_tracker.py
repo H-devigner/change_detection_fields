@@ -93,6 +93,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--input-crs", default="", help="CRS to assign when a file has no CRS, for example EPSG:4326.")
     parser.add_argument("--metric-crs", default="EPSG:32636", help="Projected CRS used for area and overlap metrics.")
+    parser.add_argument("--output-crs", default="EPSG:4326", help="CRS used for GeoJSON outputs.")
     parser.add_argument("--min-iou", type=float, default=0.30, help="Minimum IoU for a stable one-to-one match.")
     parser.add_argument(
         "--min-overlap-ratio",
@@ -102,6 +103,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--skip-figures", action="store_true")
     parser.add_argument("--skip-gifs", action="store_true")
+    parser.add_argument("--skip-geojson", action="store_true", help="Skip GeoJSON vector output exports.")
     parser.add_argument("--gif-duration-ms", type=int, default=900)
     parser.add_argument("--dry-run", action="store_true", help="Only discover snapshots; do not read vectors.")
     parser.add_argument("--quiet", action="store_true")
@@ -377,8 +379,85 @@ def load_snapshot(snapshot: VectorSnapshot, input_crs: str, metric_crs: str) -> 
     return gdf[["field_uid", "snapshot", "area_ha", "geometry"]]
 
 
+def compute_common_bounds(gdfs: list[gpd.GeoDataFrame]) -> tuple[float, float, float, float] | None:
+    non_empty = [gdf for gdf in gdfs if not gdf.empty]
+    if not non_empty:
+        return None
+    bounds = np.array([gdf.total_bounds for gdf in non_empty], dtype=float)
+    minx = float(np.nanmin(bounds[:, 0]))
+    miny = float(np.nanmin(bounds[:, 1]))
+    maxx = float(np.nanmax(bounds[:, 2]))
+    maxy = float(np.nanmax(bounds[:, 3]))
+    width = maxx - minx
+    height = maxy - miny
+    pad = max(width, height) * 0.02
+    if pad == 0:
+        pad = 1.0
+    return minx - pad, miny - pad, maxx + pad, maxy + pad
+
+
+def apply_map_view(ax, bounds: tuple[float, float, float, float] | None) -> None:
+    if bounds is not None:
+        minx, miny, maxx, maxy = bounds
+        ax.set_xlim(minx, maxx)
+        ax.set_ylim(miny, maxy)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_axis_off()
+
+
+def write_geojson(gdf: gpd.GeoDataFrame, path: Path, output_crs: str) -> None:
+    if gdf.empty:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    output = gdf.copy()
+    if output_crs and output.crs is not None:
+        output = output.to_crs(output_crs)
+    output.to_file(path, driver="GeoJSON")
+
+
 def safe_div(numerator: float, denominator: float) -> float:
     return float(numerator / denominator) if denominator else 0.0
+
+
+def build_event_geometries(
+    pair_label: str,
+    previous: VectorSnapshot,
+    current: VectorSnapshot,
+    from_gdf: gpd.GeoDataFrame,
+    to_gdf: gpd.GeoDataFrame,
+    split_from_ids: set[str],
+    merge_to_ids: set[str],
+    disappeared_ids: set[str],
+    new_ids: set[str],
+) -> gpd.GeoDataFrame:
+    rows = []
+    from_lookup = from_gdf.set_index("field_uid", drop=False)
+    to_lookup = to_gdf.set_index("field_uid", drop=False)
+
+    def add_events(field_ids: set[str], event_type: str, source: gpd.GeoDataFrame, source_snapshot: str) -> None:
+        for field_id in sorted(field_ids):
+            if field_id not in source.index:
+                continue
+            row = source.loc[field_id]
+            rows.append(
+                {
+                    "pair": pair_label,
+                    "event_type": event_type,
+                    "field_id": field_id,
+                    "source_snapshot": source_snapshot,
+                    "area_ha": float(row["area_ha"]),
+                    "geometry": row.geometry,
+                }
+            )
+
+    add_events(split_from_ids, "split", from_lookup, previous.label)
+    add_events(disappeared_ids, "disappeared", from_lookup, previous.label)
+    add_events(merge_to_ids, "merge", to_lookup, current.label)
+    add_events(new_ids, "new", to_lookup, current.label)
+    event_crs = from_gdf.crs if from_gdf.crs is not None else to_gdf.crs
+    if not rows:
+        return gpd.GeoDataFrame(geometry=[], crs=event_crs)
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=event_crs)
 
 
 def compare_pair(
@@ -388,18 +467,29 @@ def compare_pair(
     to_gdf: gpd.GeoDataFrame,
     min_iou: float,
     min_overlap_ratio: float,
-) -> tuple[dict, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[
+    dict,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    gpd.GeoDataFrame,
+    gpd.GeoDataFrame,
+    gpd.GeoDataFrame,
+]:
     pair_label = f"{previous.label}_to_{current.label}"
     from_fields = from_gdf.rename(columns={"field_uid": "from_field_id", "area_ha": "from_area_ha"})
     to_fields = to_gdf.rename(columns={"field_uid": "to_field_id", "area_ha": "to_area_ha"})
     from_fields = from_fields[["from_field_id", "from_area_ha", "geometry"]]
     to_fields = to_fields[["to_field_id", "to_area_ha", "geometry"]]
+    pair_crs = from_gdf.crs if from_gdf.crs is not None else to_gdf.crs
 
     if from_fields.empty or to_fields.empty:
         overlaps = pd.DataFrame()
+        overlaps_gdf = gpd.GeoDataFrame(geometry=[], crs=pair_crs)
     else:
         overlaps_gdf = gpd.overlay(from_fields, to_fields, how="intersection", keep_geom_type=False)
         overlaps_gdf = overlaps_gdf[overlaps_gdf.geometry.notna() & ~overlaps_gdf.geometry.is_empty].copy()
+        overlaps_gdf = overlaps_gdf.reset_index(drop=True)
         overlaps_gdf["intersection_area_ha"] = overlaps_gdf.geometry.area / 10_000.0
         overlaps_gdf["union_area_ha"] = (
             overlaps_gdf["from_area_ha"] + overlaps_gdf["to_area_ha"] - overlaps_gdf["intersection_area_ha"]
@@ -411,6 +501,7 @@ def compare_pair(
 
     if overlaps.empty:
         matched = pd.DataFrame()
+        matched_gdf = gpd.GeoDataFrame(geometry=[], crs=pair_crs)
         split_from_ids: set[str] = set()
         merge_to_ids: set[str] = set()
         covered_from_ids: set[str] = set()
@@ -423,6 +514,7 @@ def compare_pair(
         )
         mutual_mask = overlaps.apply(lambda row: (row["from_field_id"], row["to_field_id"]) in mutual_pairs, axis=1)
         matched = overlaps[mutual_mask & (overlaps["iou"] >= min_iou)].copy()
+        matched_gdf = overlaps_gdf.loc[matched.index].copy()
 
         split_counts = overlaps[overlaps["from_overlap_ratio"] >= min_overlap_ratio].groupby("from_field_id")[
             "to_field_id"
@@ -446,6 +538,17 @@ def compare_pair(
     events.extend({"pair": pair_label, "event_type": "disappeared", "field_id": field_id} for field_id in disappeared_ids)
     events.extend({"pair": pair_label, "event_type": "new", "field_id": field_id} for field_id in new_ids)
     events_df = pd.DataFrame(events)
+    events_gdf = build_event_geometries(
+        pair_label,
+        previous,
+        current,
+        from_gdf,
+        to_gdf,
+        split_from_ids,
+        merge_to_ids,
+        disappeared_ids,
+        new_ids,
+    )
 
     matched_area = float(matched["intersection_area_ha"].sum()) if not matched.empty else 0.0
     matched_iou_mean = float(matched["iou"].mean()) if not matched.empty else 0.0
@@ -477,24 +580,37 @@ def compare_pair(
     }
     if not overlaps.empty:
         overlaps.insert(0, "pair", pair_label)
+        overlaps_gdf.insert(0, "pair", pair_label)
     if not matched.empty:
         matched.insert(0, "pair", pair_label)
-    return summary, overlaps, matched, events_df
+        matched_gdf.insert(0, "pair", pair_label)
+    return summary, overlaps, matched, events_df, overlaps_gdf, matched_gdf, events_gdf
 
 
-def save_snapshot_plot(path: Path, gdf: gpd.GeoDataFrame, title: str) -> None:
+def save_snapshot_plot(
+    path: Path,
+    gdf: gpd.GeoDataFrame,
+    title: str,
+    bounds: tuple[float, float, float, float] | None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(9, 9))
     if not gdf.empty:
         gdf.plot(ax=ax, facecolor="#2ca02c", edgecolor="#174d1a", linewidth=0.15)
     ax.set_title(title)
-    ax.set_axis_off()
-    fig.tight_layout()
+    apply_map_view(ax, bounds)
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92)
     fig.savefig(path, dpi=180)
     plt.close(fig)
 
 
-def save_pair_overlay(path: Path, from_gdf: gpd.GeoDataFrame, to_gdf: gpd.GeoDataFrame, title: str) -> None:
+def save_pair_overlay(
+    path: Path,
+    from_gdf: gpd.GeoDataFrame,
+    to_gdf: gpd.GeoDataFrame,
+    title: str,
+    bounds: tuple[float, float, float, float] | None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(9, 9))
     if not from_gdf.empty:
@@ -502,8 +618,8 @@ def save_pair_overlay(path: Path, from_gdf: gpd.GeoDataFrame, to_gdf: gpd.GeoDat
     if not to_gdf.empty:
         to_gdf.boundary.plot(ax=ax, color="#1f77b4", linewidth=0.25, label="to")
     ax.set_title(title)
-    ax.set_axis_off()
-    fig.tight_layout()
+    apply_map_view(ax, bounds)
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92)
     fig.savefig(path, dpi=180)
     plt.close(fig)
 
@@ -583,11 +699,17 @@ def main() -> None:
     output_dir = args.output_dir
     tables_dir = output_dir / "tables"
     figures_dir = output_dir / "figures"
+    geojson_dir = output_dir / "geojson"
     snapshots_dir = figures_dir / "snapshots"
     pairs_dir = figures_dir / "pairs"
+    geojson_snapshots_dir = geojson_dir / "snapshots"
+    geojson_pairs_dir = geojson_dir / "pairs"
     tables_dir.mkdir(parents=True, exist_ok=True)
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     pairs_dir.mkdir(parents=True, exist_ok=True)
+    if not args.skip_geojson:
+        geojson_snapshots_dir.mkdir(parents=True, exist_ok=True)
+        geojson_pairs_dir.mkdir(parents=True, exist_ok=True)
 
     gdfs = {}
     snapshot_rows = []
@@ -607,20 +729,43 @@ def main() -> None:
             }
         )
         LOGGER.info("Loaded %s: fields=%d, area_ha=%.2f", snapshot.label, len(gdf), gdf["area_ha"].sum())
-        if not args.skip_figures:
+
+    plot_bounds = compute_common_bounds(list(gdfs.values()))
+    if plot_bounds is not None:
+        LOGGER.info(
+            "Using fixed map bounds for all figures: %.2f, %.2f, %.2f, %.2f",
+            plot_bounds[0],
+            plot_bounds[1],
+            plot_bounds[2],
+            plot_bounds[3],
+        )
+
+    if not args.skip_geojson:
+        for snapshot in snapshots:
+            write_geojson(
+                gdfs[snapshot.label],
+                geojson_snapshots_dir / f"{snapshot.label}_fields.geojson",
+                args.output_crs,
+            )
+
+    if not args.skip_figures:
+        for snapshot in snapshots:
             frame_path = snapshots_dir / f"{snapshot.label}.png"
-            save_snapshot_plot(frame_path, gdf, f"{snapshot.label} field polygons")
+            save_snapshot_plot(frame_path, gdfs[snapshot.label], f"{snapshot.label} field polygons", plot_bounds)
             snapshot_frame_paths.append(frame_path)
 
     summaries = []
     overlaps_all = []
     matches_all = []
     events_all = []
+    overlaps_geo_all = []
+    matches_geo_all = []
+    events_geo_all = []
     pair_frame_paths = []
     for index, (previous, current) in enumerate(pairs, start=1):
         pair_label = f"{previous.label}_to_{current.label}"
         LOGGER.info("Processing vector pair %d/%d: %s", index, len(pairs), pair_label)
-        summary, overlaps, matched, events = compare_pair(
+        summary, overlaps, matched, events, overlaps_geo, matched_geo, events_geo = compare_pair(
             previous,
             current,
             gdfs[previous.label],
@@ -635,6 +780,12 @@ def main() -> None:
             matches_all.append(matched)
         if not events.empty:
             events_all.append(events)
+        if not overlaps_geo.empty:
+            overlaps_geo_all.append(overlaps_geo)
+        if not matched_geo.empty:
+            matches_geo_all.append(matched_geo)
+        if not events_geo.empty:
+            events_geo_all.append(events_geo)
         LOGGER.info(
             "%s: matched=%d, new=%d, disappeared=%d, split=%d, merge=%d, aw_iou=%.3f",
             pair_label,
@@ -645,9 +796,31 @@ def main() -> None:
             summary["merge_candidate_count"],
             summary["matched_iou_area_weighted"],
         )
+        if not args.skip_geojson:
+            write_geojson(
+                overlaps_geo,
+                geojson_pairs_dir / f"{pair_label}_overlap_intersections.geojson",
+                args.output_crs,
+            )
+            write_geojson(
+                matched_geo,
+                geojson_pairs_dir / f"{pair_label}_matched_intersections.geojson",
+                args.output_crs,
+            )
+            write_geojson(
+                events_geo,
+                geojson_pairs_dir / f"{pair_label}_change_events.geojson",
+                args.output_crs,
+            )
         if not args.skip_figures:
             frame_path = pairs_dir / f"{pair_label}.png"
-            save_pair_overlay(frame_path, gdfs[previous.label], gdfs[current.label], f"{previous.label} -> {current.label}")
+            save_pair_overlay(
+                frame_path,
+                gdfs[previous.label],
+                gdfs[current.label],
+                f"{previous.label} -> {current.label}",
+                plot_bounds,
+            )
             pair_frame_paths.append(frame_path)
 
     snapshot_summary = pd.DataFrame(snapshot_rows)
@@ -655,12 +828,44 @@ def main() -> None:
     overlaps_df = pd.concat(overlaps_all, ignore_index=True) if overlaps_all else pd.DataFrame()
     matches_df = pd.concat(matches_all, ignore_index=True) if matches_all else pd.DataFrame()
     events_df = pd.concat(events_all, ignore_index=True) if events_all else pd.DataFrame()
+    overlaps_geo_df = (
+        gpd.GeoDataFrame(
+            pd.concat(overlaps_geo_all, ignore_index=True),
+            geometry="geometry",
+            crs=overlaps_geo_all[0].crs,
+        )
+        if overlaps_geo_all
+        else gpd.GeoDataFrame(geometry=[])
+    )
+    matches_geo_df = (
+        gpd.GeoDataFrame(
+            pd.concat(matches_geo_all, ignore_index=True),
+            geometry="geometry",
+            crs=matches_geo_all[0].crs,
+        )
+        if matches_geo_all
+        else gpd.GeoDataFrame(geometry=[])
+    )
+    events_geo_df = (
+        gpd.GeoDataFrame(
+            pd.concat(events_geo_all, ignore_index=True),
+            geometry="geometry",
+            crs=events_geo_all[0].crs,
+        )
+        if events_geo_all
+        else gpd.GeoDataFrame(geometry=[])
+    )
 
     snapshot_summary.to_csv(tables_dir / "vector_snapshot_summary.csv", index=False)
     pair_summary.to_csv(tables_dir / "vector_pair_summary.csv", index=False)
     overlaps_df.to_csv(tables_dir / "vector_overlap_matrix.csv", index=False)
     matches_df.to_csv(tables_dir / "vector_field_matches.csv", index=False)
     events_df.to_csv(tables_dir / "vector_split_merge_events.csv", index=False)
+
+    if not args.skip_geojson:
+        write_geojson(overlaps_geo_df, geojson_dir / "vector_overlap_intersections.geojson", args.output_crs)
+        write_geojson(matches_geo_df, geojson_dir / "vector_field_matches.geojson", args.output_crs)
+        write_geojson(events_geo_df, geojson_dir / "vector_change_events.geojson", args.output_crs)
 
     if not args.skip_figures:
         save_summary_dashboard(figures_dir / "vector_change_metrics_dashboard.png", pair_summary)

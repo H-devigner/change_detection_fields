@@ -293,10 +293,21 @@ tables/vector_pair_summary.csv
 tables/vector_overlap_matrix.csv
 tables/vector_field_matches.csv
 tables/vector_split_merge_events.csv
+geojson/snapshots/*_fields.geojson
+geojson/pairs/*_overlap_intersections.geojson
+geojson/pairs/*_matched_intersections.geojson
+geojson/pairs/*_change_events.geojson
+geojson/vector_overlap_intersections.geojson
+geojson/vector_field_matches.geojson
+geojson/vector_change_events.geojson
 figures/vector_change_metrics_dashboard.png
 figures/timelines/vector_fields_timeline.gif
 figures/timelines/vector_pair_overlay_timeline.gif
 ```
+
+Snapshot and pair PNG/GIF map frames use one fixed extent and equal aspect ratio
+computed from all loaded snapshots, so visual comparisons do not stretch or jump
+between years.
 
 Main vector metrics:
 
