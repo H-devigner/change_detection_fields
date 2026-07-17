@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a static stakeholder dashboard for vector field-change outputs.
 
-The dashboard reads the CSV/PNG/GIF/GeoJSON artifacts produced by
+The dashboard reads the CSV/PNG/GIF/GeoJSON artifacts written by
 vector_field_change_tracker.py and writes a self-contained HTML report. It uses
 only the Python standard library so it can run in the same environment without
 adding Streamlit, Plotly, or a web server.
@@ -556,7 +556,7 @@ def infer_comparison_design(pair_rows: list[dict[str, str]]) -> tuple[str, str]:
     return (
         "Chronological pair comparisons",
         (
-            "Comparisons follow the generated pair table. Every pair uses from_snapshot as the baseline "
+            "Comparisons follow the pair table. Every pair uses from_snapshot as the baseline "
             "and to_snapshot as the monitored state, so cross-season pairs should be interpreted more carefully."
         ),
     )
@@ -697,7 +697,7 @@ def metric_guide_html() -> str:
                 ),
                 (
                     "Comparison Periods",
-                    "Number of from-to comparisons produced from the selected pair mode.",
+                    "Number of from-to comparisons included from the selected pair mode.",
                     "For same-season yearly mode with 2020-2023 and two seasons, this is six comparisons: three year-over-year pairs per season.",
                 ),
                 (
@@ -923,7 +923,7 @@ def render_dashboard(
     pair_cards = render_pair_cards(pair_rows, assets["pair_pngs"], input_dir, output_dir, max_pair_cards)
     data_links = asset_links("GeoJSON Downloads", assets["geojson_root"] + assets["geojson_pairs"], output_dir)
 
-    generated_meta = {
+    dashboard_meta = {
         "input_dir": str(input_dir),
         "snapshot_rows": len(snapshot_rows),
         "pair_rows": len(pair_rows),
@@ -1102,7 +1102,7 @@ def render_dashboard(
       <div class="media-grid">{timeline_html}</div>
     </section>
     <section class="panel">
-      <h2>Generated Summary Figures</h2>
+      <h2>Summary Figures</h2>
       <div class="media-grid">{dashboard_png_html or '<p class="muted">No summary PNGs found.</p>'}</div>
     </section>
     <section class="panel">
@@ -1112,7 +1112,7 @@ def render_dashboard(
     {data_links}
   </main>
   <footer>
-    Generated from <code>{html.escape(str(input_dir))}</code>. Metadata: <script type="application/json" id="dashboard-meta">{html.escape(json.dumps(generated_meta))}</script>
+    Source data: <code>{html.escape(str(input_dir))}</code>. Metadata: <script type="application/json" id="dashboard-meta">{html.escape(json.dumps(dashboard_meta))}</script>
   </footer>
 </body>
 </html>
