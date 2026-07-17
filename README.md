@@ -338,6 +338,7 @@ The dashboard is written to:
 
 ```text
 data/processed/country_2020_2023_same_season_yearly/dashboard/index.html
+data/processed/country_2020_2023_same_season_yearly/dashboard/metric_reference.html
 ```
 
 By default, the dashboard copies referenced PNG, GIF, and GeoJSON files into:
@@ -354,6 +355,6 @@ It summarizes KPI cards, field-area trends, IoU trends, split/merge/new/disappea
 counts, matched-field distribution statistics, pair overlays, timeline GIFs, and
 links to GeoJSON comparison outputs.
 
-The dashboard also includes a collapsible "What Each Metric Means" guide
-for stakeholder presentations. It explains every KPI, chart metric, split/merge
-indicator, IoU statistic, area trend, and caveat directly inside the dashboard.
+The main dashboard links to `metric_reference.html`, which contains the detailed
+methodology, metric definitions, formulas, percentile notes, plot interpretation,
+and caveats.

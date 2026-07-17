@@ -598,6 +598,19 @@ def comparison_context_html(snapshot_rows: list[dict[str, str]], pair_rows: list
     """
 
 
+def methodology_link_html() -> str:
+    return """
+    <section class="panel reference-card">
+      <div>
+        <span class="eyebrow">Reference page</span>
+        <h2>Methodology and Metric Reference</h2>
+        <p>The detailed baseline logic, metric definitions, formulas, percentile notes, visualization notes, and interpretation caveats are separated from this executive dashboard.</p>
+      </div>
+      <a class="reference-link" href="metric_reference.html">Open detailed reference</a>
+    </section>
+    """
+
+
 def plot_guide_html() -> str:
     plots = [
         (
@@ -644,6 +657,119 @@ def plot_guide_html() -> str:
         <p>These plots are descriptive monitoring outputs. They show where the field delineation changed and which periods deserve review.</p>
       </div>
       <div class="plot-guide-grid">{cards}</div>
+    </section>
+    """
+
+
+def methodology_deep_dive_html(
+    snapshot_rows: list[dict[str, str]],
+    pair_rows: list[dict[str, str]],
+    match_rows: list[dict[str, str]],
+) -> str:
+    first_snapshot = snapshot_display(snapshot_rows[0].get("snapshot", "")) if snapshot_rows else "-"
+    latest_snapshot = snapshot_display(snapshot_rows[-1].get("snapshot", "")) if snapshot_rows else "-"
+    design_title, design_detail = infer_comparison_design(pair_rows)
+    ious = [to_float(row.get("iou")) for row in match_rows if row.get("iou") not in (None, "")]
+    iou_min = fmt_num(min(ious), 3) if ious else "-"
+    iou_max = fmt_num(max(ious), 3) if ious else "-"
+    pair_examples = "".join(
+        f"<li>{html.escape(snapshot_display(row.get('from_snapshot', '')))} baseline to "
+        f"{html.escape(snapshot_display(row.get('to_snapshot', '')))} monitored state</li>"
+        for row in pair_rows[:6]
+    ) or "<li>No pair rows were found in the summary table.</li>"
+    return f"""
+    <section class="panel">
+      <div class="section-heading">
+        <span class="eyebrow">Detailed method</span>
+        <h2>How The Comparison Is Structured</h2>
+        <p>{html.escape(design_detail)}</p>
+      </div>
+      <div class="reference-grid">
+        <article>
+          <h3>Pair-Level Baseline</h3>
+          <p>Each comparison row has its own baseline. The <strong>from_snapshot</strong> is the baseline layer and the <strong>to_snapshot</strong> is the monitored layer. Pair metrics are not all measured against the first available snapshot.</p>
+        </article>
+        <article>
+          <h3>Dashboard-Level Baseline</h3>
+          <p>The headline net-area KPI summarizes the first loaded snapshot, <strong>{html.escape(first_snapshot)}</strong>, against the latest loaded snapshot, <strong>{html.escape(latest_snapshot)}</strong>. This is only the executive summary baseline.</p>
+        </article>
+        <article>
+          <h3>Current Pair Design</h3>
+          <p>{html.escape(design_title)}. Same-season year-over-year comparisons are usually the safest for interpretation because they reduce seasonal crop-condition effects.</p>
+        </article>
+      </div>
+      <h3>Example Comparison Rows</h3>
+      <ul class="reference-list">{pair_examples}</ul>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <span class="eyebrow">Core formulas</span>
+        <h2>Spatial Matching Metrics</h2>
+        <p>These metrics compare polygon geometry between the baseline field layer and the monitored field layer.</p>
+      </div>
+      <div class="formula-grid">
+        <article>
+          <h3>Intersection over Union</h3>
+          <code>IoU = intersection_area / union_area</code>
+          <p>Intersection is the shared area between two field polygons. Union is the combined area covered by either polygon. IoU ranges from 0 to 1.</p>
+        </article>
+        <article>
+          <h3>Area-Weighted IoU</h3>
+          <code>sum(IoU * intersection_area) / sum(intersection_area)</code>
+          <p>This gives more influence to larger matched overlaps, which makes it more useful for country-scale summaries than a simple average over every matched object.</p>
+        </article>
+        <article>
+          <h3>Net Area Change</h3>
+          <code>to_area_ha - from_area_ha</code>
+          <p>Positive values mean the monitored layer has more mapped field area than its baseline. Negative values mean less mapped field area.</p>
+        </article>
+      </div>
+      <p class="reference-note">Observed matched-field IoU range in this run: <strong>{iou_min}</strong> to <strong>{iou_max}</strong>.</p>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <span class="eyebrow">Percentiles</span>
+        <h2>Reading p10, p50, and p90</h2>
+        <p>Percentiles summarize the distribution of field-level values without requiring every individual field to be inspected.</p>
+      </div>
+      <div class="reference-grid">
+        <article>
+          <h3>p10</h3>
+          <p>10 percent of matched fields are at or below this value. For IoU, it highlights the weaker-match tail. For area change, it highlights the stronger shrinking tail.</p>
+        </article>
+        <article>
+          <h3>p50</h3>
+          <p>The median. Half the matched fields are below it and half are above it. This is the best single value for the typical matched field.</p>
+        </article>
+        <article>
+          <h3>p90</h3>
+          <p>90 percent of matched fields are at or below this value. For IoU, the top 10 percent are more stable than this value. For area change, it highlights the stronger expanding tail.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <span class="eyebrow">Event logic</span>
+        <h2>New, Disappeared, Split, and Merge Candidates</h2>
+        <p>These are operational flags based on overlap thresholds. They identify where visual review is most useful.</p>
+      </div>
+      <div class="reference-grid">
+        <article>
+          <h3>New Fields</h3>
+          <p>Fields in the monitored layer without enough overlap from the baseline layer. This can reflect expansion, improved detection, or seasonal/image differences.</p>
+        </article>
+        <article>
+          <h3>Disappeared Fields</h3>
+          <p>Fields in the baseline layer without enough overlap in the monitored layer. This can reflect field loss, missed detection, or changed image conditions.</p>
+        </article>
+        <article>
+          <h3>Split and Merge Candidates</h3>
+          <p>A split candidate is one baseline field overlapping multiple monitored fields. A merge candidate is one monitored field overlapping multiple baseline fields.</p>
+        </article>
+      </div>
     </section>
     """
 
@@ -1000,6 +1126,9 @@ def render_dashboard(
     .kpi.orange strong {{ color: var(--orange); }}
     .kpi.purple strong {{ color: var(--purple); }}
     .panel {{ padding: 26px; margin: 22px 0; }}
+    .reference-card {{ display: flex; justify-content: space-between; align-items: center; gap: 18px; }}
+    .reference-card p {{ margin-bottom: 0; }}
+    .reference-link {{ display: inline-block; white-space: nowrap; padding: 13px 18px; border-radius: 16px; background: #255b2b; color: white; text-decoration: none; font-weight: 800; }}
     .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }}
     .chart-card {{ background: rgba(255,255,255,0.62); border: 1px solid var(--line); border-radius: 22px; padding: 18px; }}
     .chart-note {{ margin: -4px 0 12px; font-size: 0.94rem; }}
@@ -1047,6 +1176,7 @@ def render_dashboard(
     footer {{ max-width: 1280px; margin: 0 auto; padding: 12px clamp(18px, 5vw, 72px) 48px; color: var(--muted); }}
     @media (max-width: 960px) {{
       .hero, .grid-2, .media-grid, .pair-grid {{ grid-template-columns: 1fr; }}
+      .reference-card {{ align-items: flex-start; flex-direction: column; }}
       .context-grid, .plot-guide-grid {{ grid-template-columns: 1fr; }}
       .metric-grid {{ grid-template-columns: 1fr; }}
       .kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -1072,8 +1202,7 @@ def render_dashboard(
   <main>
     <section class="kpi-grid">{kpis}</section>
     {comparison_context_html(snapshot_rows, pair_rows)}
-    {metric_guide_html()}
-    {plot_guide_html()}
+    {methodology_link_html()}
     <section class="panel">
       <h2>Change Trends</h2>
       <div class="grid-2">
@@ -1119,6 +1248,105 @@ def render_dashboard(
 """
 
 
+def render_metric_reference_page(input_dir: Path, output_dir: Path, title: str, subtitle: str) -> str:
+    tables_dir = input_dir / "tables"
+    snapshot_rows = sorted(read_csv_rows(tables_dir / "vector_snapshot_summary.csv"), key=snapshot_sort_key)
+    pair_rows = read_csv_rows(tables_dir / "vector_pair_summary.csv")
+    match_rows = read_csv_rows(tables_dir / "vector_field_matches.csv")
+    reference_title = f"{title} - Methodology and Metric Reference"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{html.escape(reference_title)}</title>
+  <style>
+    :root {{
+      --ink: #17211b;
+      --muted: #637067;
+      --panel: rgba(255, 255, 255, 0.9);
+      --line: rgba(23, 33, 27, 0.12);
+      --green: #2f7d32;
+      --paper: #fbfaf4;
+      --shadow: 0 18px 50px rgba(20, 37, 28, 0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--ink);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(61, 132, 79, 0.2), transparent 32rem),
+        linear-gradient(135deg, #f8f2df 0%, #eef5ed 50%, #f6fbf6 100%);
+      min-height: 100vh;
+    }}
+    header, main, footer {{ max-width: 1180px; margin: 0 auto; padding-left: clamp(18px, 5vw, 56px); padding-right: clamp(18px, 5vw, 56px); }}
+    header {{ padding-top: 52px; padding-bottom: 18px; }}
+    main {{ padding-bottom: 64px; }}
+    footer {{ padding-bottom: 40px; color: var(--muted); }}
+    .hero, .panel {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }}
+    .hero {{ padding: 34px; }}
+    .panel {{ padding: 26px; margin: 22px 0; }}
+    .eyebrow {{ text-transform: uppercase; letter-spacing: 0.14em; color: var(--green); font-weight: 800; font-size: 0.78rem; }}
+    h1 {{ font-size: clamp(2.2rem, 5vw, 4.8rem); line-height: 0.95; margin: 14px 0; letter-spacing: -0.06em; }}
+    h2 {{ margin: 0 0 16px; font-size: clamp(1.35rem, 2.6vw, 2rem); letter-spacing: -0.03em; }}
+    h3 {{ margin: 0 0 10px; }}
+    p {{ color: var(--muted); line-height: 1.58; }}
+    a {{ color: #255b2b; font-weight: 800; }}
+    code {{ display: block; white-space: normal; padding: 13px; border-radius: 14px; background: rgba(47,125,50,0.08); color: #213629; font-weight: 800; }}
+    .back-link {{ display: inline-block; margin-bottom: 18px; padding: 10px 14px; border-radius: 14px; background: rgba(47,125,50,0.1); text-decoration: none; }}
+    .section-heading {{ max-width: 880px; margin-bottom: 18px; }}
+    .context-grid, .plot-guide-grid, .reference-grid, .formula-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }}
+    .context-grid article, .plot-guide-card, .reference-grid article, .formula-grid article {{
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.66);
+      padding: 16px;
+    }}
+    .context-grid ul, .reference-list {{ margin: 0; padding-left: 20px; color: var(--muted); line-height: 1.65; }}
+    .metric-guide .eyebrow {{ display: inline-block; margin-bottom: 10px; }}
+    .metric-group {{ border: 1px solid var(--line); border-radius: 20px; background: rgba(255,255,255,0.58); margin: 14px 0; overflow: hidden; }}
+    .metric-group summary {{ cursor: pointer; padding: 17px 20px; font-weight: 850; letter-spacing: -0.02em; color: #213629; }}
+    .metric-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 16px 16px; }}
+    .metric-item {{ border-radius: 16px; background: rgba(255,255,255,0.72); border: 1px solid rgba(23,33,27,0.08); padding: 15px; }}
+    .metric-item h4 {{ margin: 0 0 8px; font-size: 1rem; }}
+    .metric-item p {{ margin: 0 0 8px; color: #435247; }}
+    .metric-item small, .plot-guide-card small {{ color: var(--muted); line-height: 1.45; display: block; }}
+    .reference-note {{ margin-top: 16px; padding: 14px; border-radius: 16px; background: rgba(34,87,122,0.08); }}
+    @media (max-width: 960px) {{
+      .context-grid, .plot-guide-grid, .reference-grid, .formula-grid, .metric-grid {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <a class="back-link" href="index.html">Back to dashboard</a>
+    <section class="hero">
+      <span class="eyebrow">Metric reference</span>
+      <h1>Methodology and Metric Reference</h1>
+      <p>{html.escape(subtitle)}</p>
+    </section>
+  </header>
+  <main>
+    {methodology_deep_dive_html(snapshot_rows, pair_rows, match_rows)}
+    {metric_guide_html()}
+    {plot_guide_html()}
+    {comparison_context_html(snapshot_rows, pair_rows)}
+  </main>
+  <footer>
+    Source data: <code>{html.escape(str(input_dir))}</code>
+  </footer>
+</body>
+</html>
+"""
+
+
 def main() -> None:
     args = parse_args()
     input_dir = args.input_dir.resolve()
@@ -1134,7 +1362,11 @@ def main() -> None:
     )
     out_path = output_dir / "index.html"
     out_path.write_text(html_text, encoding="utf-8")
+    reference_text = render_metric_reference_page(input_dir, output_dir, args.title, args.subtitle)
+    reference_path = output_dir / "metric_reference.html"
+    reference_path.write_text(reference_text, encoding="utf-8")
     print(f"Dashboard written to: {out_path}")
+    print(f"Metric reference written to: {reference_path}")
 
 
 if __name__ == "__main__":
