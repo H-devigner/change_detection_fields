@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -18,6 +19,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from PIL import Image
+from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, mapping
+from shapely.validation import make_valid
 
 
 LOGGER = logging.getLogger("vector_field_change")
@@ -422,14 +425,106 @@ def figure_size_for_bounds(
     return max(min_side, min(max_side, long_side * aspect)), min(max_side, long_side)
 
 
+def polygonal_geometry(geometry):
+    if geometry is None or geometry.is_empty:
+        return None
+    try:
+        geometry = make_valid(geometry)
+    except Exception:
+        geometry = geometry.buffer(0)
+    if geometry is None or geometry.is_empty:
+        return None
+    if isinstance(geometry, Polygon):
+        return geometry if geometry.area > 0 else None
+    if isinstance(geometry, MultiPolygon):
+        polygons = [part for part in geometry.geoms if not part.is_empty and part.area > 0]
+        if not polygons:
+            return None
+        return polygons[0] if len(polygons) == 1 else MultiPolygon(polygons)
+    if isinstance(geometry, GeometryCollection):
+        polygons = []
+        for part in geometry.geoms:
+            polygonal = polygonal_geometry(part)
+            if isinstance(polygonal, Polygon):
+                polygons.append(polygonal)
+            elif isinstance(polygonal, MultiPolygon):
+                polygons.extend(polygonal.geoms)
+        if not polygons:
+            return None
+        return polygons[0] if len(polygons) == 1 else MultiPolygon(polygons)
+    return None
+
+
+def json_property(value):
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def write_geojson_python(gdf: gpd.GeoDataFrame, path: Path) -> None:
+    geometry_column = gdf.geometry.name
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write('{"type":"FeatureCollection","features":[\n')
+        first = True
+        for _, row in gdf.iterrows():
+            geometry = row.geometry
+            if geometry is None or geometry.is_empty:
+                continue
+            properties = {
+                column: json_property(row[column])
+                for column in gdf.columns
+                if column != geometry_column
+            }
+            feature = {
+                "type": "Feature",
+                "properties": properties,
+                "geometry": mapping(geometry),
+            }
+            if not first:
+                handle.write(",\n")
+            json.dump(feature, handle, ensure_ascii=False, allow_nan=False)
+            first = False
+        handle.write("\n]}\n")
+
+
+def sanitize_geojson_layer(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    if gdf.empty:
+        return gdf
+    output = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
+    if output.empty:
+        return output
+    before = len(output)
+    output["geometry"] = output.geometry.map(polygonal_geometry)
+    output = output[output.geometry.notna() & ~output.geometry.is_empty].copy()
+    if len(output) < before:
+        LOGGER.warning("Dropped %d non-polygonal or invalid geometries before GeoJSON export", before - len(output))
+    return gpd.GeoDataFrame(output, geometry="geometry", crs=gdf.crs)
+
+
 def write_geojson(gdf: gpd.GeoDataFrame, path: Path, output_crs: str) -> None:
     if gdf.empty:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    output = gdf.copy()
+    output = sanitize_geojson_layer(gdf)
+    if output.empty:
+        LOGGER.warning("Skipping empty GeoJSON after geometry sanitization: %s", path)
+        return
     if output_crs and output.crs is not None:
         output = output.to_crs(output_crs)
-    output.to_file(path, driver="GeoJSON")
+    try:
+        output.to_file(path, driver="GeoJSON")
+    except Exception as exc:
+        LOGGER.warning("Pyogrio failed to write %s (%s). Retrying with pure-Python GeoJSON writer.", path, exc)
+        write_geojson_python(output, path)
 
 
 def safe_div(numerator: float, denominator: float) -> float:
