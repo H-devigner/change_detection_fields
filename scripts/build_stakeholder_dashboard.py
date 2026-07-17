@@ -590,7 +590,7 @@ def plot_guide_html() -> str:
         (
             "Field Area Timeline",
             "Shows total mapped agricultural-field hectares for every loaded year-season snapshot.",
-            "Use it to talk about broad expansion or contraction. Do not present it as accuracy; it is model-output area.",
+            "Use it to assess broad expansion or contraction. Do not present it as accuracy; it is model-output area.",
         ),
         (
             "Net Area Change by Period",
@@ -618,16 +618,16 @@ def plot_guide_html() -> str:
         <article class="plot-guide-card">
           <h3>{html.escape(name)}</h3>
           <p>{html.escape(meaning)}</p>
-          <small>{html.escape(talk_track)}</small>
+          <small>{html.escape(interpretation)}</small>
         </article>
         """
-        for name, meaning, talk_track in plots
+        for name, meaning, interpretation in plots
     )
     return f"""
     <section class="panel">
       <div class="section-heading">
-        <span class="eyebrow">Presentation guide</span>
-        <h2>How To Talk About The Plots</h2>
+        <span class="eyebrow">Visualization guide</span>
+        <h2>Plot Interpretation Guide</h2>
         <p>These plots are descriptive monitoring outputs. They show where the field delineation changed and which periods deserve review.</p>
       </div>
       <div class="plot-guide-grid">{cards}</div>
