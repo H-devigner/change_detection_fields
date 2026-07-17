@@ -14,6 +14,8 @@ import csv
 import html
 import json
 import math
+import os
+import shutil
 from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import mean, median
@@ -45,6 +47,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--title", default="Agricultural Field Change Dashboard")
     parser.add_argument("--subtitle", default="Stakeholder summary of field delineation change monitoring")
     parser.add_argument("--max-pair-cards", type=int, default=18, help="Maximum pair preview cards to show.")
+    parser.add_argument(
+        "--no-copy-assets",
+        action="store_true",
+        help=(
+            "Link to assets in the original processed output folder instead of "
+            "copying PNG/GIF/GeoJSON files into dashboard/assets."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -113,15 +123,9 @@ def season_from_snapshot(snapshot: str) -> str:
     return parts[1] if len(parts) == 2 and parts[0].isdigit() else snapshot
 
 
-def rel_link(path: Path, output_dir: Path) -> str:
-    return html.escape(path.resolve().relative_to(output_dir.resolve()).as_posix()) if path.resolve().is_relative_to(output_dir.resolve()) else html.escape(path.as_posix())
-
-
 def rel_path(path: Path, output_dir: Path) -> str:
-    try:
-        return html.escape(path.resolve().relative_to(output_dir.resolve()).as_posix())
-    except ValueError:
-        return html.escape(path.resolve().as_posix())
+    relative = os.path.relpath(path.resolve(), output_dir.resolve())
+    return html.escape(relative.replace(os.sep, "/"))
 
 
 def min_max(values: list[float]) -> tuple[float, float]:
@@ -349,6 +353,26 @@ def find_assets(input_dir: Path) -> dict[str, list[Path]]:
     }
 
 
+def copy_dashboard_assets(assets: dict[str, list[Path]], input_dir: Path, output_dir: Path) -> dict[str, list[Path]]:
+    copied: dict[str, list[Path]] = {}
+    assets_dir = output_dir / "assets"
+    input_root = input_dir.resolve()
+    for key, paths in assets.items():
+        copied[key] = []
+        for source in paths:
+            if not source.exists() or not source.is_file():
+                continue
+            try:
+                relative = source.resolve().relative_to(input_root)
+            except ValueError:
+                relative = Path(source.name)
+            destination = assets_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            copied[key].append(destination)
+    return copied
+
+
 def compute_summary(snapshot_rows: list[dict[str, str]], pair_rows: list[dict[str, str]]) -> dict[str, object]:
     snapshots = sorted(snapshot_rows, key=snapshot_sort_key)
     pairs = pair_rows
@@ -498,13 +522,22 @@ def asset_links(title: str, paths: Iterable[Path], output_dir: Path, limit: int 
     return f"<section class=\"panel\"><h2>{html.escape(title)}</h2><div class=\"download-grid\">{''.join(links)}</div>{more}</section>"
 
 
-def render_dashboard(input_dir: Path, output_dir: Path, title: str, subtitle: str, max_pair_cards: int) -> str:
+def render_dashboard(
+    input_dir: Path,
+    output_dir: Path,
+    title: str,
+    subtitle: str,
+    max_pair_cards: int,
+    copy_assets: bool,
+) -> str:
     tables_dir = input_dir / "tables"
     snapshot_rows = sorted(read_csv_rows(tables_dir / "vector_snapshot_summary.csv"), key=snapshot_sort_key)
     pair_rows = read_csv_rows(tables_dir / "vector_pair_summary.csv")
     match_rows = read_csv_rows(tables_dir / "vector_field_matches.csv")
     event_rows = read_csv_rows(tables_dir / "vector_split_merge_events.csv")
     assets = find_assets(input_dir)
+    if copy_assets:
+        assets = copy_dashboard_assets(assets, input_dir, output_dir)
     summary = compute_summary(snapshot_rows, pair_rows)
 
     snapshot_labels = [snapshot_display(row.get("snapshot", "")) for row in snapshot_rows]
@@ -730,7 +763,14 @@ def main() -> None:
     input_dir = args.input_dir.resolve()
     output_dir = (args.output_dir or (input_dir / "dashboard")).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    html_text = render_dashboard(input_dir, output_dir, args.title, args.subtitle, args.max_pair_cards)
+    html_text = render_dashboard(
+        input_dir,
+        output_dir,
+        args.title,
+        args.subtitle,
+        args.max_pair_cards,
+        copy_assets=not args.no_copy_assets,
+    )
     out_path = output_dir / "index.html"
     out_path.write_text(html_text, encoding="utf-8")
     print(f"Dashboard written to: {out_path}")

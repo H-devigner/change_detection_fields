@@ -340,6 +340,16 @@ The dashboard is written to:
 data/processed/country_2020_2023_same_season_yearly/dashboard/index.html
 ```
 
+By default, the dashboard copies referenced PNG, GIF, and GeoJSON files into:
+
+```text
+data/processed/country_2020_2023_same_season_yearly/dashboard/assets/
+```
+
+This makes the HTML portable as long as the `dashboard/` folder is kept together.
+Use `--no-copy-assets` only if you want the HTML to link back to the original
+processed output folders.
+
 It summarizes KPI cards, field-area trends, IoU trends, split/merge/new/disappeared
 counts, matched-field distribution statistics, pair overlays, timeline GIFs, and
 links to GeoJSON comparison outputs.
