@@ -166,10 +166,11 @@ def svg_line_chart(
     plot_h = height - pad_top - pad_bottom
     if not labels or not values:
         return empty_chart_svg("No data available")
-    if y_min is None or y_max is None:
-        low, high = min_max(values)
-    else:
-        low, high = y_min, y_max
+    low, high = min_max(values)
+    if y_min is not None:
+        low = y_min
+    if y_max is not None:
+        high = y_max
     if low == high:
         low, high = min_max(values)
 
@@ -380,6 +381,18 @@ def find_assets(input_dir: Path) -> dict[str, list[Path]]:
     }
 
 
+def timeline_paths_for_dashboard(gifs: list[Path]) -> list[Path]:
+    season_pair_gifs = [
+        path
+        for path in gifs
+        if path.name.startswith("vector_pair_overlay_") and path.name != "vector_pair_overlay_timeline.gif"
+    ]
+    if not season_pair_gifs:
+        return gifs
+    hidden_when_seasonal_exists = {"vector_pair_overlay_timeline.gif"}
+    return [path for path in gifs if path.name not in hidden_when_seasonal_exists]
+
+
 def copy_dashboard_assets(assets: dict[str, list[Path]], input_dir: Path, output_dir: Path) -> dict[str, list[Path]]:
     copied: dict[str, list[Path]] = {}
     assets_dir = output_dir / "assets"
@@ -408,6 +421,8 @@ def compute_summary(snapshot_rows: list[dict[str, str]], pair_rows: list[dict[st
     first_area = to_float(first.get("area_ha"))
     latest_area = to_float(latest.get("area_ha"))
     net_area = latest_area - first_area if snapshots else 0.0
+    latest_field_count = to_int(latest.get("field_count"))
+    total_field_observations = sum(to_int(row.get("field_count")) for row in snapshots)
     total_new = sum(to_int(row.get("new_count")) for row in pairs)
     total_disappeared = sum(to_int(row.get("disappeared_count")) for row in pairs)
     total_split = sum(to_int(row.get("split_candidate_count")) for row in pairs)
@@ -429,6 +444,8 @@ def compute_summary(snapshot_rows: list[dict[str, str]], pair_rows: list[dict[st
         "latest_snapshot": latest.get("snapshot", ""),
         "first_area": first_area,
         "latest_area": latest_area,
+        "latest_field_count": latest_field_count,
+        "total_field_observations": total_field_observations,
         "net_area": net_area,
         "net_area_pct": safe_div(net_area, first_area),
         "total_new": total_new,
@@ -467,6 +484,22 @@ def season_summary(snapshot_rows: list[dict[str, str]], pair_rows: list[dict[str
                 fmt_num(mean(ious), 3) if ious else "-",
                 sum(to_int(row.get("new_count")) for row in pairs),
                 sum(to_int(row.get("disappeared_count")) for row in pairs),
+            ]
+        )
+    return result
+
+
+def country_monitoring_rows(snapshot_rows: list[dict[str, str]]) -> list[list[str]]:
+    result = []
+    for row in sorted(snapshot_rows, key=snapshot_sort_key):
+        result.append(
+            [
+                snapshot_display(row.get("snapshot", "")),
+                season_display(row.get("season", "")),
+                fmt_num(to_float(row.get("field_count")), 0),
+                fmt_num(to_float(row.get("area_ha")), 1),
+                fmt_num(to_float(row.get("mean_field_area_ha")), 2),
+                fmt_num(to_float(row.get("median_field_area_ha")), 2),
             ]
         )
     return result
@@ -1039,6 +1072,7 @@ def render_dashboard(
 
     snapshot_labels = [snapshot_display(row.get("snapshot", "")) for row in snapshot_rows]
     snapshot_areas = [to_float(row.get("area_ha")) for row in snapshot_rows]
+    snapshot_field_counts = [to_float(row.get("field_count")) for row in snapshot_rows]
     pair_labels = [pair_label(row) for row in pair_rows]
     pair_short_labels = [label.replace("_", " ").replace(" -> ", " -> ") for label in pair_labels]
     net_area_values = [to_float(row.get("net_area_change_ha")) for row in pair_rows]
@@ -1049,6 +1083,8 @@ def render_dashboard(
         [
             card("Snapshots", str(summary["snapshot_count"]), f"{summary['pair_count']} comparison periods", "teal"),
             card("Latest Field Area", f"{fmt_num(float(summary['latest_area']), 1)} ha", snapshot_display(str(summary["latest_snapshot"])), "green"),
+            card("Latest Field Count", fmt_num(float(summary["latest_field_count"]), 0), snapshot_display(str(summary["latest_snapshot"])), "teal"),
+            card("Total Field Observations", fmt_num(float(summary["total_field_observations"]), 0), "sum across monitored snapshots", "purple"),
             card("Net Area Change", f"{fmt_num(float(summary['net_area']), 1)} ha", fmt_pct(float(summary["net_area_pct"])), "orange"),
             card("Mean Matched IoU", fmt_num(float(summary["mean_iou"]), 3), "area-weighted pair average", "blue"),
             card("New Fields", fmt_num(float(summary["total_new"]), 0), "sum across pairs", "blue"),
@@ -1063,6 +1099,10 @@ def render_dashboard(
         ["Season", "Snapshots", "Start Area Ha", "Latest Area Ha", "Net Ha", "Net %", "Mean IoU", "New", "Disappeared"],
         season_summary(snapshot_rows, pair_rows),
     )
+    country_monitoring_table = table_html(
+        ["Snapshot", "Season", "Fields", "Area Ha", "Mean Field Ha", "Median Field Ha"],
+        country_monitoring_rows(snapshot_rows),
+    )
     distribution_table = table_html(["Statistic", "Value"], distribution_rows(match_rows))
     event_table = table_html(
         ["Event Type", "Count"],
@@ -1071,7 +1111,7 @@ def render_dashboard(
 
     timeline_html = "".join(
         f'<figure><img src="{rel_path(path, output_dir)}" alt="{html.escape(path.name)}" loading="lazy" /><figcaption>{html.escape(path.name)}</figcaption></figure>'
-        for path in assets["gifs"]
+        for path in timeline_paths_for_dashboard(assets["gifs"])
     ) or '<p class="muted">No timeline GIFs found.</p>'
 
     dashboard_png_html = "".join(
@@ -1239,11 +1279,16 @@ def render_dashboard(
     <section class="panel">
       <h2>Change Trends</h2>
       <div class="grid-2">
-        <div class="chart-card"><h3>Field Area Timeline</h3><p class="chart-note">Each point is the total detected field area for one year-season snapshot.</p>{svg_line_chart(snapshot_labels, snapshot_areas, '#2f7d32', ' ha')}</div>
+        <div class="chart-card"><h3>Field Area Timeline</h3><p class="chart-note">Each point is the total detected country-scale field area for one year-season snapshot. The y-axis starts at 0 ha to keep the hectare scale honest.</p>{svg_line_chart(snapshot_labels, snapshot_areas, '#2f7d32', ' ha', y_min=0.0, y_digits=0)}</div>
+        <div class="chart-card"><h3>Field Count Timeline</h3><p class="chart-note">Each point is the total number of detected field polygons for the entire country in that monitored season.</p>{svg_line_chart(snapshot_labels, snapshot_field_counts, '#0f766e', y_min=0.0, y_digits=0)}</div>
         <div class="chart-card"><h3>Net Area Change by Period</h3><p class="chart-note">Each bar is monitored snapshot area minus its pair baseline area.</p>{svg_bar_chart(pair_short_labels, net_area_values)}</div>
         <div class="chart-card"><h3>Spatial Persistence: Area-Weighted IoU</h3><p class="chart-note">Area-weighted IoU is plotted on its natural 0-1 scale. 0 means no spatial overlap; 1 means perfect overlap; larger field overlaps carry more weight in the average.</p>{svg_line_chart(pair_short_labels, iou_values, '#22577a', y_min=0.0, y_max=1.0, y_digits=2)}</div>
         <div class="chart-card"><h3>Field Turnover Events</h3><p class="chart-note">Object-count signals for where fields appeared, disappeared, split, or merged.</p>{svg_stacked_event_chart(pair_short_labels, pair_rows)}</div>
       </div>
+    </section>
+    <section class="panel">
+      <h2>Country Monitoring Summary</h2>
+      {country_monitoring_table}
     </section>
     <section class="panel">
       <h2>Season-Level Summary</h2>

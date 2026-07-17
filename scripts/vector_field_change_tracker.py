@@ -751,6 +751,22 @@ def save_gif_from_pngs(frame_paths: list[Path], gif_path: Path, duration_ms: int
     )
 
 
+def save_grouped_gifs(
+    grouped_frame_paths: dict[str, list[Path]],
+    output_dir: Path,
+    filename_template: str,
+    duration_ms: int,
+) -> list[Path]:
+    saved_paths = []
+    for group, frame_paths in sorted(grouped_frame_paths.items()):
+        gif_path = output_dir / filename_template.format(group=group)
+        save_gif_from_pngs(frame_paths, gif_path, duration_ms)
+        if frame_paths:
+            saved_paths.append(gif_path)
+            LOGGER.info("Saved %s with %d frames", gif_path, len(frame_paths))
+    return saved_paths
+
+
 def save_summary_dashboard(path: Path, summary: pd.DataFrame) -> None:
     if summary.empty:
         return
@@ -826,6 +842,7 @@ def main() -> None:
     gdfs = {}
     snapshot_rows = []
     snapshot_frame_paths = []
+    snapshot_frame_paths_by_season: dict[str, list[Path]] = {}
     for snapshot in snapshots:
         gdf = load_snapshot(snapshot, args.input_crs, args.metric_crs)
         gdfs[snapshot.label] = gdf
@@ -865,6 +882,7 @@ def main() -> None:
             frame_path = snapshots_dir / f"{snapshot.label}.png"
             save_snapshot_plot(frame_path, gdfs[snapshot.label], f"{snapshot.label} field polygons", plot_bounds)
             snapshot_frame_paths.append(frame_path)
+            snapshot_frame_paths_by_season.setdefault(snapshot.season, []).append(frame_path)
 
     summaries = []
     overlaps_all = []
@@ -874,6 +892,7 @@ def main() -> None:
     matches_geo_all = []
     events_geo_all = []
     pair_frame_paths = []
+    pair_frame_paths_by_season: dict[str, list[Path]] = {}
     for index, (previous, current) in enumerate(pairs, start=1):
         pair_label = f"{previous.label}_to_{current.label}"
         LOGGER.info("Processing vector pair %d/%d: %s", index, len(pairs), pair_label)
@@ -934,6 +953,8 @@ def main() -> None:
                 plot_bounds,
             )
             pair_frame_paths.append(frame_path)
+            pair_group = previous.season if previous.season == current.season else "cross_season"
+            pair_frame_paths_by_season.setdefault(pair_group, []).append(frame_path)
 
     snapshot_summary = pd.DataFrame(snapshot_rows)
     pair_summary = pd.DataFrame(summaries)
@@ -982,8 +1003,21 @@ def main() -> None:
     if not args.skip_figures:
         save_summary_dashboard(figures_dir / "vector_change_metrics_dashboard.png", pair_summary)
         if not args.skip_gifs:
-            save_gif_from_pngs(snapshot_frame_paths, figures_dir / "timelines" / "vector_fields_timeline.gif", args.gif_duration_ms)
-            save_gif_from_pngs(pair_frame_paths, figures_dir / "timelines" / "vector_pair_overlay_timeline.gif", args.gif_duration_ms)
+            timelines_dir = figures_dir / "timelines"
+            save_gif_from_pngs(snapshot_frame_paths, timelines_dir / "vector_fields_timeline.gif", args.gif_duration_ms)
+            save_gif_from_pngs(pair_frame_paths, timelines_dir / "vector_pair_overlay_timeline.gif", args.gif_duration_ms)
+            save_grouped_gifs(
+                snapshot_frame_paths_by_season,
+                timelines_dir,
+                "vector_fields_{group}_timeline.gif",
+                args.gif_duration_ms,
+            )
+            save_grouped_gifs(
+                pair_frame_paths_by_season,
+                timelines_dir,
+                "vector_pair_overlay_{group}_timeline.gif",
+                args.gif_duration_ms,
+            )
 
     LOGGER.info("Output directory: %s", output_dir)
     LOGGER.info("Total elapsed time: %.1fs", time.perf_counter() - start)

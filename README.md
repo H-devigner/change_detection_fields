@@ -302,7 +302,11 @@ geojson/vector_field_matches.geojson
 geojson/vector_change_events.geojson
 figures/vector_change_metrics_dashboard.png
 figures/timelines/vector_fields_timeline.gif
+figures/timelines/vector_fields_february_april_timeline.gif
+figures/timelines/vector_fields_june_august_timeline.gif
 figures/timelines/vector_pair_overlay_timeline.gif
+figures/timelines/vector_pair_overlay_february_april_timeline.gif
+figures/timelines/vector_pair_overlay_june_august_timeline.gif
 ```
 
 Snapshot and pair PNG/GIF map frames use one fixed extent and equal aspect ratio
@@ -351,9 +355,10 @@ This makes the HTML portable as long as the `dashboard/` folder is kept together
 Use `--no-copy-assets` only if you want the HTML to link back to the original
 processed output folders.
 
-It summarizes KPI cards, field-area trends, IoU trends, split/merge/new/disappeared
-counts, matched-field distribution statistics, pair overlays, timeline GIFs, and
-links to GeoJSON comparison outputs.
+It summarizes KPI cards, field-area trends, country field-count trends, IoU
+trends, split/merge/new/disappeared counts, matched-field distribution
+statistics, pair overlays, season-wise timeline GIFs, and links to GeoJSON
+comparison outputs.
 
 The main dashboard links to `metric_reference.html`, which contains the detailed
 methodology, metric definitions, formulas, percentile notes, plot interpretation,
