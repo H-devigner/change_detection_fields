@@ -709,11 +709,19 @@ def downsample_binary_any(mask: np.ndarray, max_size: int) -> tuple[np.ndarray, 
     step = preview_step(mask.shape, max_size)
     if step == 1:
         return mask, step
-    height = (mask.shape[0] // step) * step
-    width = (mask.shape[1] // step) * step
-    if height == 0 or width == 0:
+    block_rows = int(np.ceil(mask.shape[0] / step))
+    block_cols = int(np.ceil(mask.shape[1] / step))
+    if block_rows == 0 or block_cols == 0:
         return mask, 1
-    blocks = mask[:height, :width].reshape(height // step, step, width // step, step)
+    padded_height = block_rows * step
+    padded_width = block_cols * step
+    padded = np.pad(
+        mask,
+        ((0, padded_height - mask.shape[0]), (0, padded_width - mask.shape[1])),
+        mode="constant",
+        constant_values=False,
+    )
+    blocks = padded.reshape(block_rows, step, block_cols, step)
     return blocks.any(axis=(1, 3)), step
 
 

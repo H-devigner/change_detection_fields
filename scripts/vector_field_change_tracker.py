@@ -405,6 +405,23 @@ def apply_map_view(ax, bounds: tuple[float, float, float, float] | None) -> None
     ax.set_axis_off()
 
 
+def figure_size_for_bounds(
+    bounds: tuple[float, float, float, float] | None,
+    long_side: float = 11.0,
+    min_side: float = 6.0,
+    max_side: float = 14.0,
+) -> tuple[float, float]:
+    if bounds is None:
+        return 9.0, 9.0
+    minx, miny, maxx, maxy = bounds
+    width = max(maxx - minx, 1.0)
+    height = max(maxy - miny, 1.0)
+    aspect = width / height
+    if aspect >= 1:
+        return min(max_side, long_side), max(min_side, min(max_side, long_side / aspect))
+    return max(min_side, min(max_side, long_side * aspect)), min(max_side, long_side)
+
+
 def write_geojson(gdf: gpd.GeoDataFrame, path: Path, output_crs: str) -> None:
     if gdf.empty:
         return
@@ -594,13 +611,13 @@ def save_snapshot_plot(
     bounds: tuple[float, float, float, float] | None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(9, 9))
+    fig, ax = plt.subplots(figsize=figure_size_for_bounds(bounds))
     if not gdf.empty:
         gdf.plot(ax=ax, facecolor="#2ca02c", edgecolor="#174d1a", linewidth=0.15)
     ax.set_title(title)
     apply_map_view(ax, bounds)
     fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92)
-    fig.savefig(path, dpi=180)
+    fig.savefig(path, dpi=180, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
 
@@ -612,7 +629,7 @@ def save_pair_overlay(
     bounds: tuple[float, float, float, float] | None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(9, 9))
+    fig, ax = plt.subplots(figsize=figure_size_for_bounds(bounds))
     if not from_gdf.empty:
         from_gdf.boundary.plot(ax=ax, color="#d62728", linewidth=0.25, label="from")
     if not to_gdf.empty:
@@ -620,7 +637,7 @@ def save_pair_overlay(
     ax.set_title(title)
     apply_map_view(ax, bounds)
     fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92)
-    fig.savefig(path, dpi=180)
+    fig.savefig(path, dpi=180, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
 
 
