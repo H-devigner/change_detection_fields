@@ -502,6 +502,32 @@ def distribution_rows(matches: list[dict[str, str]]) -> list[list[str]]:
     ]
 
 
+def percentile_reference_rows(matches: list[dict[str, str]]) -> list[list[str]]:
+    ious = [to_float(row.get("iou")) for row in matches if row.get("iou") not in (None, "")]
+    from_changes = []
+    for row in matches:
+        from_area = to_float(row.get("from_area_ha"))
+        to_area = to_float(row.get("to_area_ha"))
+        if from_area:
+            from_changes.append((to_area - from_area) / from_area)
+    return [
+        [
+            "Matched field IoU",
+            fmt_num(percentile(ious, 0.10), 3) if ious else "-",
+            fmt_num(percentile(ious, 0.50), 3) if ious else "-",
+            fmt_num(percentile(ious, 0.90), 3) if ious else "-",
+            "Boundary similarity. Higher values mean more stable matched field shapes.",
+        ],
+        [
+            "Matched field area change",
+            fmt_pct(percentile(from_changes, 0.10)) if from_changes else "-",
+            fmt_pct(percentile(from_changes, 0.50)) if from_changes else "-",
+            fmt_pct(percentile(from_changes, 0.90)) if from_changes else "-",
+            "Relative size change for matched fields. Negative means smaller; positive means larger.",
+        ],
+    ]
+
+
 def build_narrative(summary: dict[str, object]) -> list[str]:
     net = float(summary["net_area"])
     direction = "increased" if net > 0 else "decreased" if net < 0 else "remained stable"
@@ -672,6 +698,11 @@ def methodology_deep_dive_html(
     ious = [to_float(row.get("iou")) for row in match_rows if row.get("iou") not in (None, "")]
     iou_min = fmt_num(min(ious), 3) if ious else "-"
     iou_max = fmt_num(max(ious), 3) if ious else "-"
+    percentile_table = table_html(
+        ["Metric", "p10", "p50", "p90", "How to read it"],
+        percentile_reference_rows(match_rows),
+        class_name="percentile-table",
+    )
     pair_examples = "".join(
         f"<li>{html.escape(snapshot_display(row.get('from_snapshot', '')))} baseline to "
         f"{html.escape(snapshot_display(row.get('to_snapshot', '')))} monitored state</li>"
@@ -732,22 +763,24 @@ def methodology_deep_dive_html(
       <div class="section-heading">
         <span class="eyebrow">Percentiles</span>
         <h2>Reading p10, p50, and p90</h2>
-        <p>Percentiles summarize the distribution of field-level values without requiring every individual field to be inspected.</p>
+        <p>Think of percentiles as sorting all matched fields from lowest value to highest value, then reading points along that sorted list.</p>
       </div>
       <div class="reference-grid">
         <article>
           <h3>p10</h3>
-          <p>10 percent of matched fields are at or below this value. For IoU, it highlights the weaker-match tail. For area change, it highlights the stronger shrinking tail.</p>
+          <p>A low-end value. Roughly 10 percent of matched fields are lower than this, and roughly 90 percent are higher. For IoU, this shows the weaker matches.</p>
         </article>
         <article>
           <h3>p50</h3>
-          <p>The median. Half the matched fields are below it and half are above it. This is the best single value for the typical matched field.</p>
+          <p>The middle value, also called the median. Half the matched fields are lower and half are higher. This is the typical matched field.</p>
         </article>
         <article>
           <h3>p90</h3>
-          <p>90 percent of matched fields are at or below this value. For IoU, the top 10 percent are more stable than this value. For area change, it highlights the stronger expanding tail.</p>
+          <p>A high-end value. Roughly 90 percent of matched fields are lower than this, and roughly 10 percent are higher. For IoU, this shows the stronger matches.</p>
         </article>
       </div>
+      <h3>Values From This Run</h3>
+      {percentile_table}
     </section>
 
     <section class="panel">
@@ -1319,6 +1352,11 @@ def render_metric_reference_page(input_dir: Path, output_dir: Path, title: str, 
     .metric-item p {{ margin: 0 0 8px; color: #435247; }}
     .metric-item small, .plot-guide-card small {{ color: var(--muted); line-height: 1.45; display: block; }}
     .reference-note {{ margin-top: 16px; padding: 14px; border-radius: 16px; background: rgba(34,87,122,0.08); }}
+    .table-wrap {{ overflow-x: auto; border-radius: 18px; border: 1px solid var(--line); background: rgba(255,255,255,0.66); margin-top: 12px; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 760px; }}
+    th, td {{ text-align: left; padding: 13px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }}
+    th {{ color: #344238; background: rgba(47,125,50,0.08); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; }}
+    td {{ color: var(--muted); }}
     @media (max-width: 960px) {{
       .context-grid, .plot-guide-grid, .reference-grid, .formula-grid, .metric-grid {{ grid-template-columns: 1fr; }}
     }}
