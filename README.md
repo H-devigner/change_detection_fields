@@ -321,3 +321,25 @@ split_candidate_count
 merge_candidate_count
 net_area_change_ha
 ```
+
+
+## Stakeholder Dashboard
+
+Build a static HTML dashboard from any processed vector change output directory:
+
+```bash
+python scripts/build_stakeholder_dashboard.py \
+  --input-dir data/processed/country_2020_2023_same_season_yearly \
+  --title "Kursh Country Field Change Dashboard" \
+  --subtitle "Same-season yearly monitoring, 2020-2023"
+```
+
+The dashboard is written to:
+
+```text
+data/processed/country_2020_2023_same_season_yearly/dashboard/index.html
+```
+
+It summarizes KPI cards, field-area trends, IoU trends, split/merge/new/disappeared
+counts, matched-field distribution statistics, pair overlays, timeline GIFs, and
+links to GeoJSON comparison outputs.
