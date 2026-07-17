@@ -44,8 +44,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Dashboard directory. Default: <input-dir>/dashboard.",
     )
-    parser.add_argument("--title", default="Agricultural Field Change Dashboard")
-    parser.add_argument("--subtitle", default="Stakeholder summary of field delineation change monitoring")
+    parser.add_argument("--title", default="Israel Agricultural Field Change Dashboard")
+    parser.add_argument("--subtitle", default="Stakeholder summary of country-scale field delineation change monitoring")
     parser.add_argument("--max-pair-cards", type=int, default=18, help="Maximum pair preview cards to show.")
     parser.add_argument(
         "--no-copy-assets",
@@ -121,6 +121,13 @@ def snapshot_display(snapshot: str) -> str:
 def season_from_snapshot(snapshot: str) -> str:
     parts = snapshot.split("_", 1)
     return parts[1] if len(parts) == 2 and parts[0].isdigit() else snapshot
+
+
+def snapshot_year(snapshot: str) -> int | None:
+    parts = snapshot.split("_", 1)
+    if parts and parts[0].isdigit():
+        return int(parts[0])
+    return None
 
 
 def rel_path(path: Path, output_dir: Path) -> str:
@@ -241,7 +248,14 @@ def svg_bar_chart(labels: list[str], values: list[float], color: str = "#0f766e"
             f'<line x1="{pad_left}" y1="{y:.2f}" x2="{width - pad_right}" y2="{y:.2f}" class="grid" />'
             f'<text x="{pad_left - 10}" y="{y + 4:.2f}" text-anchor="end" class="axis-label">{fmt_num(value, 1)}</text>'
         )
+    legend = f"""
+    <div class="chart-legend">
+      <span><i style="background:{color}"></i>Positive: mapped field area increased</span>
+      <span><i style="background:#d62728"></i>Negative: mapped field area decreased</span>
+    </div>
+    """
     return f"""
+    {legend}
     <svg viewBox="0 0 {width} {height}" class="chart-svg" role="img">
       <rect width="{width}" height="{height}" rx="18" class="chart-bg" />
       {''.join(ticks)}
@@ -485,6 +499,142 @@ def build_narrative(summary: dict[str, object]) -> list[str]:
     ]
 
 
+def infer_comparison_design(pair_rows: list[dict[str, str]]) -> tuple[str, str]:
+    if not pair_rows:
+        return "No pair comparisons found", "No pair-level baseline could be inferred because the pair summary table is empty."
+
+    same_season = True
+    consecutive_years = True
+    all_cross_year = True
+    for row in pair_rows:
+        from_snapshot = row.get("from_snapshot", "")
+        to_snapshot = row.get("to_snapshot", "")
+        from_season = season_from_snapshot(from_snapshot)
+        to_season = season_from_snapshot(to_snapshot)
+        from_year = snapshot_year(from_snapshot)
+        to_year = snapshot_year(to_snapshot)
+        if from_season != to_season:
+            same_season = False
+        if from_year is None or to_year is None or to_year <= from_year:
+            all_cross_year = False
+            consecutive_years = False
+        elif to_year - from_year != 1:
+            consecutive_years = False
+
+    if same_season and consecutive_years:
+        return (
+            "Same-season year-over-year comparisons",
+            (
+                "Each season is compared only against the same season in the next year. "
+                "This is a rolling baseline: 2020 February-April is the baseline for 2021 February-April, "
+                "then 2021 February-April is the baseline for 2022 February-April, and so on. "
+                "The June-August season follows the same rule separately."
+            ),
+        )
+    if same_season and all_cross_year:
+        return (
+            "Same-season all-year comparisons",
+            (
+                "Each season is compared against multiple later years from the same season. "
+                "Every pair still has its own baseline: the from_snapshot is the baseline and "
+                "the to_snapshot is the monitored state."
+            ),
+        )
+    return (
+        "Chronological pair comparisons",
+        (
+            "Comparisons follow the generated pair table. Every pair uses from_snapshot as the baseline "
+            "and to_snapshot as the monitored state, so cross-season pairs should be interpreted more carefully."
+        ),
+    )
+
+
+def comparison_context_html(snapshot_rows: list[dict[str, str]], pair_rows: list[dict[str, str]]) -> str:
+    design_title, design_detail = infer_comparison_design(pair_rows)
+    first_snapshot = snapshot_display(snapshot_rows[0].get("snapshot", "")) if snapshot_rows else "-"
+    latest_snapshot = snapshot_display(snapshot_rows[-1].get("snapshot", "")) if snapshot_rows else "-"
+    examples = pair_rows[:3]
+    example_rows = "".join(
+        f"<li><strong>{html.escape(snapshot_display(row.get('from_snapshot', '')))}</strong> baseline -> "
+        f"<strong>{html.escape(snapshot_display(row.get('to_snapshot', '')))}</strong> monitored state</li>"
+        for row in examples
+    )
+    examples_html = f"<ul>{example_rows}</ul>" if example_rows else '<p class="muted">No pair examples available.</p>'
+    return f"""
+    <section class="panel context-panel">
+      <div class="section-heading">
+        <span class="eyebrow">Study design</span>
+        <h2>Baseline and Comparison Logic</h2>
+        <p>{html.escape(design_detail)}</p>
+      </div>
+      <div class="context-grid">
+        <article>
+          <h3>{html.escape(design_title)}</h3>
+          <p>Pair-level metrics are always computed as <strong>later snapshot minus earlier snapshot</strong>. The earlier field layer is the baseline for that row only.</p>
+        </article>
+        <article>
+          <h3>Global KPI Baseline</h3>
+          <p>The top-level net area KPI summarizes <strong>{html.escape(first_snapshot)}</strong> to <strong>{html.escape(latest_snapshot)}</strong>. It is a first-vs-latest summary, not the baseline used for every pair chart.</p>
+        </article>
+        <article>
+          <h3>Example Pairs</h3>
+          {examples_html}
+        </article>
+      </div>
+    </section>
+    """
+
+
+def plot_guide_html() -> str:
+    plots = [
+        (
+            "Field Area Timeline",
+            "Shows total mapped agricultural-field hectares for every loaded year-season snapshot.",
+            "Use it to talk about broad expansion or contraction. Do not present it as accuracy; it is model-output area.",
+        ),
+        (
+            "Net Area Change by Period",
+            "Shows to_snapshot area minus from_snapshot area for each pair.",
+            "Bars above zero mean net mapped area gain; bars below zero mean net mapped area loss for that pair baseline.",
+        ),
+        (
+            "Spatial Persistence: Area-Weighted IoU",
+            "Shows how strongly matched field boundaries overlap between each baseline and monitored snapshot.",
+            "High values near 1 mean stable geometry; lower values mean boundary movement, fragmentation, missed detections, or true change.",
+        ),
+        (
+            "Field Turnover Events",
+            "Stacks counts of new, disappeared, split-candidate, and merge-candidate fields.",
+            "Use this to identify periods that need visual review because object-level change activity is unusually high.",
+        ),
+        (
+            "Pair Diagnostics",
+            "Overlays earlier and later field boundaries for each comparison pair.",
+            "Use these maps to visually validate whether the numeric signal is real field change or delineation/model noise.",
+        ),
+    ]
+    cards = "".join(
+        f"""
+        <article class="plot-guide-card">
+          <h3>{html.escape(name)}</h3>
+          <p>{html.escape(meaning)}</p>
+          <small>{html.escape(talk_track)}</small>
+        </article>
+        """
+        for name, meaning, talk_track in plots
+    )
+    return f"""
+    <section class="panel">
+      <div class="section-heading">
+        <span class="eyebrow">Presentation guide</span>
+        <h2>How To Talk About The Plots</h2>
+        <p>These plots are descriptive monitoring outputs. They show where the field delineation changed and which periods deserve review.</p>
+      </div>
+      <div class="plot-guide-grid">{cards}</div>
+    </section>
+    """
+
+
 def render_pair_cards(pair_rows: list[dict[str, str]], pair_pngs: list[Path], input_dir: Path, output_dir: Path, max_cards: int) -> str:
     png_by_stem = {path.stem: path for path in pair_pngs}
     cards = []
@@ -535,7 +685,7 @@ def metric_guide_html() -> str:
                 (
                     "Comparison Periods",
                     "Number of from-to comparisons produced from the selected pair mode.",
-                    "For same-season yearly mode with 2020-2023 and two seasons, this should be six comparisons.",
+                    "For same-season yearly mode with 2020-2023 and two seasons, this is six comparisons: three year-over-year pairs per season.",
                 ),
                 (
                     "Latest Field Area",
@@ -605,12 +755,12 @@ def metric_guide_html() -> str:
                 (
                     "Matched Field IoU p10 / p50 / p90",
                     "Distribution percentiles for matched field IoU values.",
-                    "p10 highlights weaker matches; p50 is the median; p90 shows high-stability matches.",
+                    "p10 means 10% of matched fields have IoU at or below that value; p50 is the median; p90 means 90% are at or below that value, so the top 10% are higher.",
                 ),
                 (
                     "Matched Field Area Change p10 / p50 / p90",
                     "Distribution of relative area change for matched fields.",
-                    "Shows whether persistent fields are generally shrinking, stable, or expanding.",
+                    "p10 shows the stronger shrinking tail, p50 shows typical change, and p90 shows the stronger expanding tail.",
                 ),
             ],
         ),
@@ -839,8 +989,15 @@ def render_dashboard(
     .panel {{ padding: 26px; margin: 22px 0; }}
     .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }}
     .chart-card {{ background: rgba(255,255,255,0.62); border: 1px solid var(--line); border-radius: 22px; padding: 18px; }}
+    .chart-note {{ margin: -4px 0 12px; font-size: 0.94rem; }}
     .section-heading {{ max-width: 860px; margin-bottom: 18px; }}
     .section-heading p {{ margin-bottom: 0; }}
+    .context-grid, .plot-guide-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }}
+    .context-grid article, .plot-guide-card {{ border-radius: 18px; border: 1px solid var(--line); background: rgba(255,255,255,0.64); padding: 16px; }}
+    .context-grid article h3, .plot-guide-card h3 {{ margin: 0 0 8px; }}
+    .context-grid article p, .plot-guide-card p {{ margin: 0 0 8px; }}
+    .context-grid ul {{ margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.55; }}
+    .plot-guide-card small {{ color: var(--muted); line-height: 1.45; display: block; }}
     .metric-guide .eyebrow {{ display: inline-block; margin-bottom: 10px; }}
     .metric-group {{ border: 1px solid var(--line); border-radius: 20px; background: rgba(255,255,255,0.58); margin: 14px 0; overflow: hidden; }}
     .metric-group summary {{ cursor: pointer; padding: 17px 20px; font-weight: 850; letter-spacing: -0.02em; color: #213629; }}
@@ -877,6 +1034,7 @@ def render_dashboard(
     footer {{ max-width: 1280px; margin: 0 auto; padding: 12px clamp(18px, 5vw, 72px) 48px; color: var(--muted); }}
     @media (max-width: 960px) {{
       .hero, .grid-2, .media-grid, .pair-grid {{ grid-template-columns: 1fr; }}
+      .context-grid, .plot-guide-grid {{ grid-template-columns: 1fr; }}
       .metric-grid {{ grid-template-columns: 1fr; }}
       .kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .download-grid {{ grid-template-columns: 1fr; }}
@@ -900,14 +1058,16 @@ def render_dashboard(
   </header>
   <main>
     <section class="kpi-grid">{kpis}</section>
+    {comparison_context_html(snapshot_rows, pair_rows)}
     {metric_guide_html()}
+    {plot_guide_html()}
     <section class="panel">
       <h2>Change Trends</h2>
       <div class="grid-2">
-        <div class="chart-card"><h3>Field Area Timeline</h3>{svg_line_chart(snapshot_labels, snapshot_areas, '#2f7d32', ' ha')}</div>
-        <div class="chart-card"><h3>Net Area Change by Period</h3>{svg_bar_chart(pair_short_labels, net_area_values)}</div>
-        <div class="chart-card"><h3>Spatial Persistence: Area-Weighted IoU</h3>{svg_line_chart(pair_short_labels, iou_values, '#22577a')}</div>
-        <div class="chart-card"><h3>Field Turnover Events</h3>{svg_stacked_event_chart(pair_short_labels, pair_rows)}</div>
+        <div class="chart-card"><h3>Field Area Timeline</h3><p class="chart-note">Each point is the total detected field area for one year-season snapshot.</p>{svg_line_chart(snapshot_labels, snapshot_areas, '#2f7d32', ' ha')}</div>
+        <div class="chart-card"><h3>Net Area Change by Period</h3><p class="chart-note">Each bar is monitored snapshot area minus its pair baseline area.</p>{svg_bar_chart(pair_short_labels, net_area_values)}</div>
+        <div class="chart-card"><h3>Spatial Persistence: Area-Weighted IoU</h3><p class="chart-note">0 means no overlap; 1 means perfect overlap. Larger field overlaps carry more weight.</p>{svg_line_chart(pair_short_labels, iou_values, '#22577a')}</div>
+        <div class="chart-card"><h3>Field Turnover Events</h3><p class="chart-note">Object-count signals for where fields appeared, disappeared, split, or merged.</p>{svg_stacked_event_chart(pair_short_labels, pair_rows)}</div>
       </div>
     </section>
     <section class="panel">

@@ -330,7 +330,7 @@ Build a static HTML dashboard from any processed vector change output directory:
 ```bash
 python scripts/build_stakeholder_dashboard.py \
   --input-dir data/processed/country_2020_2023_same_season_yearly \
-  --title "Kursh Country Field Change Dashboard" \
+  --title "Israel Country Field Change Dashboard" \
   --subtitle "Same-season yearly monitoring, 2020-2023"
 ```
 
