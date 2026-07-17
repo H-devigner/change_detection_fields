@@ -147,7 +147,15 @@ def min_max(values: list[float]) -> tuple[float, float]:
     return low - pad, high + pad
 
 
-def svg_line_chart(labels: list[str], values: list[float], color: str, y_suffix: str = "") -> str:
+def svg_line_chart(
+    labels: list[str],
+    values: list[float],
+    color: str,
+    y_suffix: str = "",
+    y_min: float | None = None,
+    y_max: float | None = None,
+    y_digits: int = 1,
+) -> str:
     width = 920
     height = 300
     pad_left = 58
@@ -156,9 +164,14 @@ def svg_line_chart(labels: list[str], values: list[float], color: str, y_suffix:
     pad_bottom = 70
     plot_w = width - pad_left - pad_right
     plot_h = height - pad_top - pad_bottom
-    low, high = min_max(values)
     if not labels or not values:
         return empty_chart_svg("No data available")
+    if y_min is None or y_max is None:
+        low, high = min_max(values)
+    else:
+        low, high = y_min, y_max
+    if low == high:
+        low, high = min_max(values)
 
     def x_at(index: int) -> float:
         if len(values) == 1:
@@ -171,7 +184,7 @@ def svg_line_chart(labels: list[str], values: list[float], color: str, y_suffix:
     points = [(x_at(i), y_at(v)) for i, v in enumerate(values)]
     path_d = " ".join(("M" if i == 0 else "L") + f" {x:.2f} {y:.2f}" for i, (x, y) in enumerate(points))
     circles = "".join(
-        f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4.5"><title>{html.escape(labels[i])}: {fmt_num(values[i], 2)}{y_suffix}</title></circle>'
+        f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4.5"><title>{html.escape(labels[i])}: {fmt_num(values[i], y_digits + 1)}{y_suffix}</title></circle>'
         for i, (x, y) in enumerate(points)
     )
     y_ticks = []
@@ -180,7 +193,7 @@ def svg_line_chart(labels: list[str], values: list[float], color: str, y_suffix:
         y = y_at(value)
         y_ticks.append(
             f'<line x1="{pad_left}" y1="{y:.2f}" x2="{width - pad_right}" y2="{y:.2f}" class="grid" />'
-            f'<text x="{pad_left - 10}" y="{y + 4:.2f}" text-anchor="end" class="axis-label">{fmt_num(value, 1)}{html.escape(y_suffix)}</text>'
+            f'<text x="{pad_left - 10}" y="{y + 4:.2f}" text-anchor="end" class="axis-label">{fmt_num(value, y_digits)}{html.escape(y_suffix)}</text>'
         )
     x_labels = []
     for i, label in enumerate(labels):
@@ -1066,7 +1079,7 @@ def render_dashboard(
       <div class="grid-2">
         <div class="chart-card"><h3>Field Area Timeline</h3><p class="chart-note">Each point is the total detected field area for one year-season snapshot.</p>{svg_line_chart(snapshot_labels, snapshot_areas, '#2f7d32', ' ha')}</div>
         <div class="chart-card"><h3>Net Area Change by Period</h3><p class="chart-note">Each bar is monitored snapshot area minus its pair baseline area.</p>{svg_bar_chart(pair_short_labels, net_area_values)}</div>
-        <div class="chart-card"><h3>Spatial Persistence: Area-Weighted IoU</h3><p class="chart-note">0 means no overlap; 1 means perfect overlap. Larger field overlaps carry more weight.</p>{svg_line_chart(pair_short_labels, iou_values, '#22577a')}</div>
+        <div class="chart-card"><h3>Spatial Persistence: Area-Weighted IoU</h3><p class="chart-note">Area-weighted IoU is plotted on its natural 0-1 scale. 0 means no spatial overlap; 1 means perfect overlap; larger field overlaps carry more weight in the average.</p>{svg_line_chart(pair_short_labels, iou_values, '#22577a', y_min=0.0, y_max=1.0, y_digits=2)}</div>
         <div class="chart-card"><h3>Field Turnover Events</h3><p class="chart-note">Object-count signals for where fields appeared, disappeared, split, or merged.</p>{svg_stacked_event_chart(pair_short_labels, pair_rows)}</div>
       </div>
     </section>
