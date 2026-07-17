@@ -522,6 +522,181 @@ def asset_links(title: str, paths: Iterable[Path], output_dir: Path, limit: int 
     return f"<section class=\"panel\"><h2>{html.escape(title)}</h2><div class=\"download-grid\">{''.join(links)}</div>{more}</section>"
 
 
+def metric_guide_html() -> str:
+    guide_groups = [
+        (
+            "Executive KPIs",
+            [
+                (
+                    "Snapshots",
+                    "Number of seasonal field-map snapshots loaded into the analysis. A snapshot is one year-season layer.",
+                    "Use it to confirm the expected years and seasons were included.",
+                ),
+                (
+                    "Comparison Periods",
+                    "Number of from-to comparisons produced from the selected pair mode.",
+                    "For same-season yearly mode with 2020-2023 and two seasons, this should be six comparisons.",
+                ),
+                (
+                    "Latest Field Area",
+                    "Total agricultural field area in the latest loaded snapshot, measured after projection to the metric CRS.",
+                    "This is an area indicator, not a direct accuracy score.",
+                ),
+                (
+                    "Net Area Change",
+                    "Latest field area minus first field area. Positive means the mapped field area increased; negative means it decreased.",
+                    "Interpret with season and model consistency in mind.",
+                ),
+                (
+                    "Mean Matched IoU",
+                    "Average area-weighted Intersection over Union for matched fields across comparison periods.",
+                    "Higher values mean field boundaries are more spatially persistent. Values closer to 1 are more stable.",
+                ),
+            ],
+        ),
+        (
+            "Field Turnover Metrics",
+            [
+                (
+                    "New Fields",
+                    "Fields in the later snapshot that do not sufficiently overlap fields in the earlier snapshot.",
+                    "Can indicate real expansion, newly detected fields, or model/data differences.",
+                ),
+                (
+                    "Disappeared Fields",
+                    "Fields in the earlier snapshot that do not sufficiently overlap fields in the later snapshot.",
+                    "Can indicate real loss, missed detections, or changed imagery/season conditions.",
+                ),
+                (
+                    "Split Candidates",
+                    "Earlier fields that overlap multiple later fields above the overlap threshold.",
+                    "Useful signal for fragmentation, subdivision, or boundary delineation changes.",
+                ),
+                (
+                    "Merge Candidates",
+                    "Later fields that overlap multiple earlier fields above the overlap threshold.",
+                    "Useful signal for consolidation, merged parcels, or changed delineation behavior.",
+                ),
+                (
+                    "Field Turnover Events",
+                    "Stacked count of new, disappeared, split, and merge candidates by comparison period.",
+                    "Use it to identify periods with unusually high change activity.",
+                ),
+            ],
+        ),
+        (
+            "Spatial Match Metrics",
+            [
+                (
+                    "IoU",
+                    "Intersection over Union: overlap area divided by combined area of an earlier and later field.",
+                    "1.0 means perfect spatial match; 0 means no overlap.",
+                ),
+                (
+                    "Area-Weighted IoU",
+                    "IoU averaged with larger matched intersections contributing more weight.",
+                    "More representative of country-scale spatial persistence than a simple per-field average.",
+                ),
+                (
+                    "Matched Count",
+                    "Number of mutually best field pairs whose IoU is above the matching threshold.",
+                    "Tracks how many field objects persist with similar location and shape.",
+                ),
+                (
+                    "Matched Field IoU p10 / p50 / p90",
+                    "Distribution percentiles for matched field IoU values.",
+                    "p10 highlights weaker matches; p50 is the median; p90 shows high-stability matches.",
+                ),
+                (
+                    "Matched Field Area Change p10 / p50 / p90",
+                    "Distribution of relative area change for matched fields.",
+                    "Shows whether persistent fields are generally shrinking, stable, or expanding.",
+                ),
+            ],
+        ),
+        (
+            "Area and Trend Metrics",
+            [
+                (
+                    "Field Area Timeline",
+                    "Total mapped field area per snapshot.",
+                    "Best for seeing broad seasonal/yearly expansion or contraction trends.",
+                ),
+                (
+                    "Net Area Change by Period",
+                    "Later snapshot area minus earlier snapshot area for each comparison.",
+                    "Positive bars indicate net mapped area gain; negative bars indicate net mapped area loss.",
+                ),
+                (
+                    "Season-Level Summary",
+                    "Aggregates start area, latest area, net change, mean IoU, new fields, and disappeared fields by season.",
+                    "Use it to compare February-April dynamics against June-August dynamics.",
+                ),
+                (
+                    "Most Volatile Period",
+                    "The comparison period with the largest combined signal from area movement and turnover counts.",
+                    "A prioritization cue for visual review, not a formal statistical anomaly test.",
+                ),
+            ],
+        ),
+        (
+            "Important Caveats",
+            [
+                (
+                    "Change Detection vs. Ground Truth",
+                    "These metrics compare model outputs across time; they do not by themselves prove real-world land-use change.",
+                    "Validation with imagery or reference data is needed for final claims.",
+                ),
+                (
+                    "Seasonal Effects",
+                    "Crop condition, cloud masking, vegetation state, and image quality can affect detected boundaries.",
+                    "Same-season comparisons are more interpretable than cross-season comparisons.",
+                ),
+                (
+                    "Split/Merge Interpretation",
+                    "Split and merge labels are candidates based on spatial overlap, not cadastral parcel decisions.",
+                    "They should be reviewed as operational flags.",
+                ),
+                (
+                    "Projection and Area",
+                    "Area metrics are computed in the configured metric CRS.",
+                    "Using an inappropriate CRS can bias hectares and distances.",
+                ),
+            ],
+        ),
+    ]
+    groups_html = []
+    for title, metrics in guide_groups:
+        rows = "".join(
+            f"""
+            <article class="metric-item">
+              <h4>{html.escape(name)}</h4>
+              <p>{html.escape(definition)}</p>
+              <small>{html.escape(interpretation)}</small>
+            </article>
+            """
+            for name, definition, interpretation in metrics
+        )
+        groups_html.append(
+            f"""
+            <details class="metric-group" open>
+              <summary>{html.escape(title)}</summary>
+              <div class="metric-grid">{rows}</div>
+            </details>
+            """
+        )
+    return f"""
+    <section class="panel metric-guide">
+      <div class="section-heading">
+        <span class="eyebrow">Interpretation guide</span>
+        <h2>What Each Metric Means</h2>
+        <p>Use this guide when presenting the dashboard. It separates descriptive monitoring indicators from validation claims.</p>
+      </div>
+      {''.join(groups_html)}
+    </section>
+    """
+
+
 def render_dashboard(
     input_dir: Path,
     output_dir: Path,
@@ -664,6 +839,17 @@ def render_dashboard(
     .panel {{ padding: 26px; margin: 22px 0; }}
     .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }}
     .chart-card {{ background: rgba(255,255,255,0.62); border: 1px solid var(--line); border-radius: 22px; padding: 18px; }}
+    .section-heading {{ max-width: 860px; margin-bottom: 18px; }}
+    .section-heading p {{ margin-bottom: 0; }}
+    .metric-guide .eyebrow {{ display: inline-block; margin-bottom: 10px; }}
+    .metric-group {{ border: 1px solid var(--line); border-radius: 20px; background: rgba(255,255,255,0.58); margin: 14px 0; overflow: hidden; }}
+    .metric-group summary {{ cursor: pointer; padding: 17px 20px; font-weight: 850; letter-spacing: -0.02em; color: #213629; }}
+    .metric-group summary:hover {{ background: rgba(47,125,50,0.07); }}
+    .metric-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 16px 16px; }}
+    .metric-item {{ border-radius: 16px; background: rgba(255,255,255,0.72); border: 1px solid rgba(23,33,27,0.08); padding: 15px; }}
+    .metric-item h4 {{ margin: 0 0 8px; font-size: 1rem; }}
+    .metric-item p {{ margin: 0 0 8px; color: #435247; }}
+    .metric-item small {{ color: var(--muted); line-height: 1.45; display: block; }}
     .chart-svg {{ width: 100%; display: block; }}
     .chart-bg {{ fill: rgba(255,255,255,0.62); }}
     .grid {{ stroke: rgba(23,33,27,0.1); stroke-width: 1; }}
@@ -691,6 +877,7 @@ def render_dashboard(
     footer {{ max-width: 1280px; margin: 0 auto; padding: 12px clamp(18px, 5vw, 72px) 48px; color: var(--muted); }}
     @media (max-width: 960px) {{
       .hero, .grid-2, .media-grid, .pair-grid {{ grid-template-columns: 1fr; }}
+      .metric-grid {{ grid-template-columns: 1fr; }}
       .kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .download-grid {{ grid-template-columns: 1fr; }}
     }}
@@ -713,6 +900,7 @@ def render_dashboard(
   </header>
   <main>
     <section class="kpi-grid">{kpis}</section>
+    {metric_guide_html()}
     <section class="panel">
       <h2>Change Trends</h2>
       <div class="grid-2">

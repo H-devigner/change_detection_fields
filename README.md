@@ -353,3 +353,7 @@ processed output folders.
 It summarizes KPI cards, field-area trends, IoU trends, split/merge/new/disappeared
 counts, matched-field distribution statistics, pair overlays, timeline GIFs, and
 links to GeoJSON comparison outputs.
+
+The generated HTML also includes a collapsible "What Each Metric Means" guide
+for stakeholder presentations. It explains every KPI, chart metric, split/merge
+indicator, IoU statistic, area trend, and caveat directly inside the dashboard.
