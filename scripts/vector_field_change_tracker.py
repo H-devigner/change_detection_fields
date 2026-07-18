@@ -109,6 +109,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-geojson", action="store_true", help="Skip GeoJSON vector output exports.")
     parser.add_argument("--gif-duration-ms", type=int, default=900)
     parser.add_argument("--dry-run", action="store_true", help="Only discover snapshots; do not read vectors.")
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help=(
+            "Continue when an expected snapshot is missing. Missing snapshots are "
+            "logged and skipped. Without this flag, missing snapshots fail fast."
+        ),
+    )
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
@@ -314,9 +322,11 @@ def discover_snapshots(args: argparse.Namespace) -> list[VectorSnapshot]:
     filename_templates = parse_filename_templates(args)
     vector_glob = resolve_vector_glob(args)
     snapshots = []
+    missing = []
     for year in years:
         for season in seasons:
             errors = []
+            label = f"{year}_{season}"
             for filename_template in filename_templates:
                 stem = filename_template.format(year=year, season=season)
                 try:
@@ -330,14 +340,23 @@ def discover_snapshots(args: argparse.Namespace) -> list[VectorSnapshot]:
                 except FileNotFoundError as exc:
                     errors.append(str(exc))
                     continue
-                LOGGER.info("Discovered %s using template '%s' -> %s", f"{year}_{season}", filename_template, path)
-                snapshots.append(VectorSnapshot(year=year, season=season, label=f"{year}_{season}", path=path))
+                LOGGER.info("Discovered %s using template '%s' -> %s", label, filename_template, path)
+                snapshots.append(VectorSnapshot(year=year, season=season, label=label, path=path))
                 break
             else:
-                raise FileNotFoundError(
-                    f"No vector snapshot found for {year}_{season} using templates: {filename_templates}. "
+                message = (
+                    f"No vector snapshot found for {label} using templates: {filename_templates}. "
                     f"Last errors: {' | '.join(errors[-3:])}"
                 )
+                if args.allow_missing:
+                    LOGGER.warning("Skipping missing snapshot %s. %s", label, message)
+                    missing.append(label)
+                    continue
+                raise FileNotFoundError(message)
+    if missing:
+        LOGGER.warning("Missing snapshots skipped (%d): %s", len(missing), ", ".join(missing))
+    if not snapshots:
+        raise FileNotFoundError("No vector snapshots were discovered.")
     return snapshots
 
 
@@ -365,6 +384,20 @@ def build_pairs(snapshots: list[VectorSnapshot], pair_mode: str) -> list[tuple[V
                 for j in range(i + 1, len(ordered))
             )
     return pairs
+
+
+def log_pair_gap_warnings(pairs: list[tuple[VectorSnapshot, VectorSnapshot]]) -> None:
+    for previous, current in pairs:
+        if previous.season != current.season:
+            continue
+        year_gap = current.year - previous.year
+        if year_gap > 1:
+            LOGGER.warning(
+                "Comparison %s -> %s skips %d missing year(s); interpret it as a multi-year gap.",
+                previous.label,
+                current.label,
+                year_gap - 1,
+            )
 
 
 def load_snapshot(snapshot: VectorSnapshot, input_crs: str, metric_crs: str) -> gpd.GeoDataFrame:
@@ -815,12 +848,18 @@ def main() -> None:
         LOGGER.info("Vector selector: %s", vector_glob)
     snapshots = discover_snapshots(args)
     if args.dry_run:
-        LOGGER.info("Dry run complete. Selected snapshots:")
+        pairs = build_pairs(snapshots, args.pair_mode)
+        log_pair_gap_warnings(pairs)
+        LOGGER.info("Dry run complete. Selected snapshots: %d", len(snapshots))
         for snapshot in snapshots:
             LOGGER.info("%s -> %s", snapshot.label, snapshot.path)
+        LOGGER.info("Dry run comparison pairs for pair mode '%s': %d", args.pair_mode, len(pairs))
+        for previous, current in pairs:
+            LOGGER.info("%s -> %s", previous.label, current.label)
         return
 
     pairs = build_pairs(snapshots, args.pair_mode)
+    log_pair_gap_warnings(pairs)
     if not pairs:
         raise ValueError(f"No comparison pairs were built for pair mode '{args.pair_mode}'")
 

@@ -263,6 +263,27 @@ python scripts/vector_field_change_tracker.py \
   --dry-run
 ```
 
+If a requested year-season folder exists but the merged field vector is not
+available yet, use `--allow-missing` to list what can be discovered and skip
+missing snapshots:
+
+```bash
+python scripts/vector_field_change_tracker.py \
+  --input-dir /mnt/KSA-Oasis/houcine/field_delineation_data/field_delineation_runs \
+  --years 2020-2025 \
+  --seasons february_april,june_august \
+  --filename-templates "kursh_{year}_images_season_{season}__dw_lulc;kursh_{year}_{season}__dw_lulc;kursh_{year}_{season}" \
+  --snapshot-vector-glob "08_instance_postprocess*/*.merged_fields.geojson" \
+  --recursive \
+  --pair-mode same-season-yearly \
+  --allow-missing \
+  --dry-run
+```
+
+Without `--allow-missing`, discovery fails fast when any expected snapshot is
+missing. With `--allow-missing`, same-season comparisons can span a multi-year
+gap if an intermediate year is unavailable; the script logs a warning for that.
+
 If you want to pass exact GeoJSON files or run folders directly, use
 `--snapshot-paths`. For two snapshots, make each entry self-labeled:
 
