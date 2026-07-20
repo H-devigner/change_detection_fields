@@ -403,6 +403,6 @@ source .venv/bin/activate
 jupyter lab notebooks/investigate_tile_lulc_clipping.ipynb
 ```
 
-The notebook is visual-only. It plots clipped mosaic bounds, LULC raster
-previews, per-tile export bounds, merged field-vector bounds, and optional
-country boundary overlays.
+The notebook is visual-only. It plots clipped mosaic raster previews and
+bounds, LULC raster previews, per-tile export bounds, merged field-vector
+bounds, and optional country boundary overlays.
