@@ -384,3 +384,25 @@ comparison outputs.
 The main dashboard links to `metric_reference.html`, which contains the detailed
 methodology, metric definitions, formulas, percentile notes, plot interpretation,
 and caveats.
+
+## Visual Clipping Diagnostics
+
+Use the notebook below when a country-scale PNG/GIF appears clipped and you need
+to see whether the issue starts in tile coverage, LULC masks, per-tile vector
+exports, merged vectors, or only the final visualization:
+
+```text
+notebooks/investigate_tile_lulc_clipping.ipynb
+```
+
+On the processing machine:
+
+```bash
+cd /mnt/KSA-Oasis/change_detection_fields
+source .venv/bin/activate
+jupyter lab notebooks/investigate_tile_lulc_clipping.ipynb
+```
+
+The notebook is visual-only. It plots clipped mosaic bounds, LULC raster
+previews, per-tile export bounds, merged field-vector bounds, and optional
+country boundary overlays.
